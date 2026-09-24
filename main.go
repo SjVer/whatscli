@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -30,6 +32,7 @@ var topBar *tview.TextView
 var infoBar *tview.TextView
 
 var chatRoot *tview.TreeNode
+var archivedExpanded bool = false
 var app *tview.Application
 
 var sessionManager *messages.SessionManager
@@ -39,9 +42,23 @@ var keyBindings *cbind.Configuration
 var uiHandler messages.UiMessageHandler
 
 func main() {
+	dump := flag.Bool("dump", false, "print the chat list and unread messages instead of starting the UI")
+	dumpWait := flag.Duration("dump-wait", 15*time.Second, "how long -dump waits for messages received while offline")
+	dumpChat := flag.String("dump-chat", "", "with -dump, load this chat from the phone and print its messages")
+	logPath := flag.String("log", "", "write the WhatsApp connection log to this file")
+	flag.Parse()
+
 	config.InitConfig()
+	logger, err := openLog(*logPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if *dump {
+		os.Exit(runDump(*dumpWait, *dumpChat, logger))
+	}
 	uiHandler = UiHandler{}
-	sessionManager = &messages.SessionManager{}
+	sessionManager = &messages.SessionManager{Log: logger}
 	sessionManager.Init(uiHandler)
 
 	app = tview.NewApplication()
@@ -63,6 +80,7 @@ func main() {
 
 	infoBar = tview.NewTextView()
 	infoBar.SetDynamicColors(true)
+	infoBar.SetBackgroundColor(tcell.ColorNames[config.Config.Colors.Background])
 	UpdateStatusBar(messages.SessionStatus{})
 
 	textView = tview.NewTextView().
@@ -120,6 +138,7 @@ func main() {
 	gridLayout.AddItem(textInput, 2, 1, 1, 3, 0, 0, false)
 
 	app.SetRoot(gridLayout, true)
+	app.SetAfterDrawFunc(greyOutUnfocusedPanel)
 	app.EnableMouse(true)
 	app.SetFocus(textInput)
 	if err := sessionManager.StartManager(); err != nil {
@@ -143,20 +162,39 @@ func MakeTree() *tview.TreeView {
 	treeView.SetChangedFunc(func(node *tview.TreeNode) {
 		reference := node.GetReference()
 		if reference == nil {
-			SetDisplayedChat(messages.Chat{"", false, "", 0, 0})
+			SetDisplayedChat(messages.Chat{})
 			return // Selecting the root node does nothing.
 		}
-		children := node.GetChildren()
-		if len(children) == 0 {
-			// Load and show files in this directory.
-			recv := reference.(messages.Chat)
+		if recv, ok := reference.(messages.Chat); ok {
 			SetDisplayedChat(recv)
-		} else {
-			// Collapse if visible, expand if collapsed.
-			node.SetExpanded(!node.IsExpanded())
+		}
+	})
+	// Collapse or expand the archived chats folder when it is selected.
+	treeView.SetSelectedFunc(func(node *tview.TreeNode) {
+		if len(node.GetChildren()) > 0 && node != chatRoot {
+			archivedExpanded = !node.IsExpanded()
+			node.SetExpanded(archivedExpanded)
 		}
 	})
 	return treeView
+}
+
+// turns all text grey in the chat panel while the chat list has focus, and in
+// the chat list otherwise
+func greyOutUnfocusedPanel(screen tcell.Screen) {
+	var unfocused *tview.Box
+	if treeView.HasFocus() {
+		unfocused = textView.Box
+	} else {
+		unfocused = treeView.Box
+	}
+	x, y, width, height := unfocused.GetInnerRect()
+	for cy := y; cy < y+height; cy++ {
+		for cx := x; cx < x+width; cx++ {
+			mainc, combc, style, _ := screen.GetContent(cx, cy)
+			screen.SetContent(cx, cy, mainc, combc, style.Foreground(tcell.ColorGray))
+		}
+	}
 }
 
 func handleFocusMessage(ev *tcell.EventKey) *tcell.EventKey {
@@ -436,6 +474,7 @@ func PrintCommands() {
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"disconnect[::-]  = Close the connection")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"logout[::-]  = Remove login data from computer")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"reset[::-]  = Remove stored session and reconnect cleanly")
+	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"relink[::-]  = Link again to get the chat list from your phone")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"quit [::-]or[::b]", config.Config.Keymap.CommandQuit, "[::-] = Exit app")
 	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "[-::-]Chat[-::-]")
@@ -592,6 +631,11 @@ func UpdateStatusBar(statusInfo messages.SessionStatus) {
 		out += "[" + config.Config.Colors.Negative + "]offline[-]"
 	}
 	out += " "
+	// the status bar is narrow, show what whatscli is waiting for instead of the rest
+	if statusInfo.Activity != "" {
+		infoBar.SetText(out + "[::d]" + statusInfo.Activity + "[::-]")
+		return
+	}
 	out += "[::d] ("
 	out += fmt.Sprint(statusInfo.BatteryCharge)
 	out += "%"
@@ -623,16 +667,50 @@ func SetDisplayedChat(wid messages.Chat) {
 // get a string representation of all messages for chat
 func getMessagesString(msgs []messages.Message) string {
 	out := ""
-	for _, msg := range msgs {
-		out += getTextMessageString(&msg)
+	for idx := range msgs {
+		var prev *messages.Message
+		if idx > 0 {
+			prev = &msgs[idx-1]
+		}
+		out += getTextMessageString(&msgs[idx], prev)
 		out += "\n"
 	}
 	return out
 }
 
+// messageGroupGap is how close in time messages of one sender must follow each
+// other to be shown as a group, with the time and name only on the first one
+const messageGroupGap = 2 * time.Minute
+
+// continuesGroup returns whether msg is shown in the group of the message before it
+func continuesGroup(prev *messages.Message, msg *messages.Message) bool {
+	if prev == nil || prev.FromMe != msg.FromMe || (!msg.FromMe && prev.ContactId != msg.ContactId) {
+		return false
+	}
+	gap := time.Duration(int64(msg.Timestamp)-int64(prev.Timestamp)) * time.Second
+	return gap >= 0 && gap <= messageGroupGap
+}
+
+// formatMessageTime returns a short time for a message, with as much of the date
+// as is needed to tell when it was sent
+func formatMessageTime(sent time.Time, now time.Time) string {
+	sentDay := time.Date(sent.Year(), sent.Month(), sent.Day(), 0, 0, 0, 0, now.Location())
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	switch {
+	case !sentDay.Before(today):
+		return sent.Format("15:04")
+	case sentDay.After(today.AddDate(0, 0, -7)):
+		return sent.Format("Mon 15:04")
+	case sent.Year() == now.Year():
+		return sent.Format("2 Jan 15:04")
+	default:
+		return sent.Format("2 Jan 2006")
+	}
+}
+
 // create a formatted string with regions based on message ID from a text message
 //TODO: optimize, use Sprintf etc
-func getTextMessageString(msg *messages.Message) string {
+func getTextMessageString(msg *messages.Message, prev *messages.Message) string {
 	colorMe := config.Config.Colors.ChatMe
 	colorContact := config.Config.Colors.ChatContact
 	out := ""
@@ -640,16 +718,24 @@ func getTextMessageString(msg *messages.Message) string {
 	if msg.Forwarded {
 		text = "[" + config.Config.Colors.ForwardedText + "]" + text + "[-]"
 	}
-	tim := time.Unix(int64(msg.Timestamp), 0)
-	time := tim.Format("02-01-06 15:04:05")
+	// the time and name are shown on their own line, once for each group, with
+	// an empty line between groups
+	header := ""
+	if !continuesGroup(prev, msg) {
+		if prev != nil {
+			header = "\n"
+		}
+		header += "[gray::-](" + formatMessageTime(time.Unix(int64(msg.Timestamp), 0), time.Now()) + ") "
+		if msg.FromMe { //msg from me
+			header += "[" + colorMe + "::b]Me:[-::-]\n"
+		} else { // message from others
+			header += "[" + colorContact + "::b]" + msg.ContactShort + ":[-::-]\n"
+		}
+	}
 	out += "[\""
 	out += msg.Id
 	out += "\"]"
-	if msg.FromMe { //msg from me
-		out += "[-::d](" + time + ") [" + colorMe + "::b]Me: [-::-]" + text
-	} else { // message from others
-		out += "[-::d](" + time + ") [" + colorContact + "::b]" + msg.ContactShort + ": [-::-]" + text
-	}
+	out += header + text
 	out += "[\"\"]"
 	return out
 }
@@ -660,8 +746,12 @@ func (u UiHandler) NewMessage(msg messages.Message) {
 	//TODO: its stupid to "go" this as its supposed to run
 	//on the ui thread anyway. But QueueUpdate blocks...?
 	go app.QueueUpdateDraw(func() {
+		var prev *messages.Message
+		if len(curRegions) > 0 {
+			prev = &curRegions[len(curRegions)-1]
+		}
+		PrintText(getTextMessageString(&msg, prev))
 		curRegions = append(curRegions, msg)
-		PrintText(getTextMessageString(&msg))
 	})
 }
 
@@ -685,11 +775,22 @@ func (u UiHandler) NewScreen(msgs []messages.Message) {
 func (u UiHandler) SetChats(ids []messages.Chat) {
 	go app.QueueUpdateDraw(func() {
 		chatRoot.ClearChildren()
+		archivedNode := tview.NewTreeNode("Archived").
+			SetReference("archived").
+			SetSelectable(true).
+			SetColor(tcell.ColorNames[config.Config.Colors.ListHeader]).
+			SetExpanded(archivedExpanded)
 		oldId := currentReceiver.Id
 		for _, element := range ids {
+			if element.Hidden {
+				continue
+			}
 			name := element.Name
 			if name == "" {
 				name = strings.TrimSuffix(strings.TrimSuffix(element.Id, messages.GROUPSUFFIX), messages.CONTACTSUFFIX)
+			}
+			if element.Pinned {
+				name = "📌 " + name
 			}
 			if element.Unread > 0 {
 				name += " ([" + config.Config.Colors.UnreadCount + "]" + fmt.Sprint(element.Unread) + "[-])"
@@ -711,10 +812,22 @@ func (u UiHandler) SetChats(ids []messages.Chat) {
 			if element.Id == oldId {
 				currentReceiver = element
 			}
-			chatRoot.AddChild(node)
+			if element.Archived {
+				archivedNode.AddChild(node)
+			} else {
+				chatRoot.AddChild(node)
+			}
 			if element.Id == currentReceiver.Id {
+				if element.Archived {
+					archivedExpanded = true
+					archivedNode.SetExpanded(true)
+				}
 				treeView.SetCurrentNode(node)
 			}
+		}
+		if count := len(archivedNode.GetChildren()); count > 0 {
+			archivedNode.SetText(fmt.Sprintf("Archived (%d)", count))
+			chatRoot.AddChild(archivedNode)
 		}
 	})
 }

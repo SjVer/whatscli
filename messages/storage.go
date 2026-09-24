@@ -1,11 +1,17 @@
 package messages
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 // MessageDatabase stores messages and contact data.
@@ -14,6 +20,12 @@ type MessageDatabase struct {
 	messagesById map[string]Message
 	chats        map[string]Chat
 	contacts     map[string]Contact
+
+	chatsPath    string
+	saveTimer    *time.Timer
+	keepArchived bool
+	// how many of the newest messages of each chat are saved
+	savedMessages int
 
 	contactLock sync.RWMutex
 	chatLock    sync.RWMutex
@@ -26,6 +38,267 @@ func (md *MessageDatabase) Init() {
 	md.messagesById = make(map[string]Message)
 	md.chats = make(map[string]Chat)
 	md.contacts = make(map[string]Contact)
+}
+
+// Reset removes all messages, chats and contacts, including the saved chats.
+func (md *MessageDatabase) Reset() error {
+	md.messageLock.Lock()
+	md.messages = make(map[string][]Message)
+	md.messagesById = make(map[string]Message)
+	md.messageLock.Unlock()
+	md.contactLock.Lock()
+	md.contacts = make(map[string]Contact)
+	md.contactLock.Unlock()
+
+	md.chatLock.Lock()
+	defer md.chatLock.Unlock()
+	md.chats = make(map[string]Chat)
+	md.keepArchived = false
+	if md.saveTimer != nil {
+		md.saveTimer.Stop()
+		md.saveTimer = nil
+	}
+	if md.chatsPath != "" {
+		if err := os.Remove(md.chatsPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// LoadChats restores the chats saved at path and keeps saving changes there.
+// The newest savedMessages messages of each chat are saved with it.
+func (md *MessageDatabase) LoadChats(path string, savedMessages int) error {
+	md.messageLock.Lock()
+	defer md.messageLock.Unlock()
+	md.chatLock.Lock()
+	defer md.chatLock.Unlock()
+
+	md.savedMessages = savedMessages
+
+	md.chatsPath = path
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	var chats []struct {
+		Chat
+		// saved by earlier versions, which only saved the newest message
+		Newest    *Message
+		NewestRaw []byte
+	}
+	if err = json.Unmarshal(data, &chats); err != nil {
+		return err
+	}
+	for _, saved := range chats {
+		chat := saved.Chat
+		chat.Unread = 0
+		if saved.Newest != nil && len(chat.Recent) == 0 {
+			chat.Recent = []SavedMessage{{Message: *saved.Newest, Raw: saved.NewestRaw}}
+		}
+		for _, recent := range chat.Recent {
+			msg := recent.Message
+			if len(recent.Raw) > 0 {
+				msg.RawMessage = &waProto.Message{}
+				if proto.Unmarshal(recent.Raw, msg.RawMessage) != nil {
+					msg.RawMessage = nil
+				}
+			}
+			if _, ok := md.messagesById[msg.Id]; !ok {
+				md.messagesById[msg.Id] = msg
+				md.messages[chat.Id] = append(md.messages[chat.Id], msg)
+			}
+		}
+		chat.Recent = nil
+		md.chats[chat.Id] = chat
+	}
+	return nil
+}
+
+// UpdateChatLastMessage moves a chat's last message time forward if timestamp is newer.
+func (md *MessageDatabase) UpdateChatLastMessage(chatID string, timestamp int64) {
+	md.chatLock.Lock()
+	defer md.chatLock.Unlock()
+
+	chat, ok := md.chats[chatID]
+	if !ok {
+		chat = Chat{Id: chatID, IsGroup: strings.Contains(chatID, GROUPSUFFIX)}
+	}
+	if timestamp > chat.LastMessage {
+		chat.LastMessage = timestamp
+		md.chats[chatID] = chat
+		md.scheduleSaveLocked()
+	}
+}
+
+// SetChatPinned sets whether a chat is pinned to the top of the chat list, and when.
+func (md *MessageDatabase) SetChatPinned(chatID string, pinned bool, pinnedAt int64) {
+	md.updateChatLocked(chatID, func(chat *Chat) {
+		chat.Pinned = pinned
+		chat.PinnedAt = pinnedAt
+	})
+}
+
+// SetChatArchived sets whether a chat is moved to the archived chats, and the
+// time of its last message at that point.
+func (md *MessageDatabase) SetChatArchived(chatID string, archived bool, archivedAt int64) {
+	md.updateChatLocked(chatID, func(chat *Chat) {
+		chat.Archived = archived
+		if archivedAt > chat.ArchivedAt {
+			chat.ArchivedAt = archivedAt
+		}
+	})
+}
+
+// SetChatUnarchived records that the phone lists a chat as not archived, while
+// its last message was at the given time. The phone may have unarchived it for
+// a message that whatscli doesn't know, so that counts as the last incoming one.
+func (md *MessageDatabase) SetChatUnarchived(chatID string, lastMessage int64) {
+	md.updateChatLocked(chatID, func(chat *Chat) {
+		if lastMessage > chat.LastIncoming {
+			chat.LastIncoming = lastMessage
+		}
+		if chat.LastIncoming <= chat.ArchivedAt {
+			chat.Archived = false
+		}
+	})
+}
+
+// MergeChat moves the messages and state of chat from into chat to, for chats
+// that turn out to be the same, like the LID and phone number of a contact.
+func (md *MessageDatabase) MergeChat(from, to string) {
+	md.messageLock.Lock()
+	for _, msg := range md.messages[from] {
+		msg.ChatId = to
+		md.messagesById[msg.Id] = msg
+		md.messages[to] = append(md.messages[to], msg)
+	}
+	delete(md.messages, from)
+	md.messageLock.Unlock()
+
+	md.chatLock.Lock()
+	defer md.chatLock.Unlock()
+	src, ok := md.chats[from]
+	if !ok {
+		return
+	}
+	dst, ok := md.chats[to]
+	if !ok {
+		dst = Chat{Id: to, IsGroup: src.IsGroup}
+	}
+	if dst.Name == "" {
+		dst.Name = src.Name
+	}
+	dst.LastMessage = max(dst.LastMessage, src.LastMessage)
+	dst.LastIncoming = max(dst.LastIncoming, src.LastIncoming)
+	dst.DeletedAt = max(dst.DeletedAt, src.DeletedAt)
+	if src.ArchivedAt > dst.ArchivedAt {
+		dst.Archived = src.Archived
+		dst.ArchivedAt = src.ArchivedAt
+	}
+	if src.Pinned && src.PinnedAt > dst.PinnedAt {
+		dst.Pinned = true
+		dst.PinnedAt = src.PinnedAt
+	}
+	dst.Unread = max(dst.Unread, src.Unread)
+	delete(md.chats, from)
+	md.chats[to] = dst
+	md.scheduleSaveLocked()
+}
+
+// SetChatDeleted records that a chat was deleted, up to the given last message time.
+func (md *MessageDatabase) SetChatDeleted(chatID string, deletedAt int64) {
+	md.updateChatLocked(chatID, func(chat *Chat) {
+		if deletedAt > chat.DeletedAt {
+			chat.DeletedAt = deletedAt
+		}
+	})
+}
+
+// SetKeepArchived sets whether archived chats stay archived when new messages arrive.
+func (md *MessageDatabase) SetKeepArchived(keep bool) {
+	md.chatLock.Lock()
+	defer md.chatLock.Unlock()
+	md.keepArchived = keep
+}
+
+func (md *MessageDatabase) updateChatLocked(chatID string, update func(chat *Chat)) {
+	md.chatLock.Lock()
+	defer md.chatLock.Unlock()
+
+	chat, ok := md.chats[chatID]
+	if !ok {
+		chat = Chat{Id: chatID, IsGroup: strings.Contains(chatID, GROUPSUFFIX)}
+	}
+	update(&chat)
+	md.chats[chatID] = chat
+	md.scheduleSaveLocked()
+}
+
+// scheduleSaveLocked saves the chats shortly, batching bursts of updates. Requires chatLock.
+func (md *MessageDatabase) scheduleSaveLocked() {
+	if md.chatsPath == "" || md.saveTimer != nil {
+		return
+	}
+	md.saveTimer = time.AfterFunc(time.Second, md.saveChats)
+}
+
+func (md *MessageDatabase) saveChats() {
+	md.messageLock.RLock()
+	md.chatLock.Lock()
+	md.saveTimer = nil
+	chats := make([]Chat, 0, len(md.chats))
+	for _, chat := range md.chats {
+		if chat.LastMessage > 0 {
+			chat.Recent = md.recentMessagesLocked(chat.Id)
+			chats = append(chats, chat)
+		}
+	}
+	path := md.chatsPath
+	md.chatLock.Unlock()
+	md.messageLock.RUnlock()
+
+	if path == "" {
+		return
+	}
+	data, err := json.Marshal(chats)
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err = os.WriteFile(tmp, data, 0600); err == nil {
+		os.Rename(tmp, path)
+	}
+}
+
+// recentMessagesLocked returns the newest messages of a chat to save. Requires messageLock.
+func (md *MessageDatabase) recentMessagesLocked(chatID string) []SavedMessage {
+	msgs := make([]Message, len(md.messages[chatID]))
+	copy(msgs, md.messages[chatID])
+	sortMessages(msgs)
+	if len(msgs) > md.savedMessages {
+		msgs = msgs[len(msgs)-md.savedMessages:]
+	}
+	recent := make([]SavedMessage, len(msgs))
+	for idx, msg := range msgs {
+		recent[idx].Message = msg
+		if msg.RawMessage != nil {
+			recent[idx].Raw, _ = proto.Marshal(msg.RawMessage)
+		}
+	}
+	return recent
+}
+
+// sortMessages sorts messages by time, oldest first.
+func sortMessages(msgs []Message) {
+	sort.Slice(msgs, func(i, j int) bool {
+		if msgs[i].Timestamp == msgs[j].Timestamp {
+			return msgs[i].Id < msgs[j].Id
+		}
+		return msgs[i].Timestamp < msgs[j].Timestamp
+	})
 }
 
 // AddMessage stores a message and updates related chat state.
@@ -92,7 +365,14 @@ func (md *MessageDatabase) updateChatFromMessageLocked(msg Message, markUnread b
 	}
 	if int64(msg.Timestamp) > chat.LastMessage {
 		chat.LastMessage = int64(msg.Timestamp)
+		md.scheduleSaveLocked()
 	}
+	if !msg.FromMe && int64(msg.Timestamp) > chat.LastIncoming {
+		chat.LastIncoming = int64(msg.Timestamp)
+		md.scheduleSaveLocked()
+	}
+	// the message may be one of the saved newest ones
+	md.scheduleSaveLocked()
 	if markUnread {
 		chat.Unread++
 	}
@@ -127,6 +407,19 @@ func (md *MessageDatabase) AddChat(chat Chat) {
 		if chat.Unread < existing.Unread {
 			chat.Unread = existing.Unread
 		}
+		chat.Pinned = existing.Pinned
+		chat.PinnedAt = existing.PinnedAt
+		chat.Archived = existing.Archived
+		chat.ArchivedAt = existing.ArchivedAt
+		chat.DeletedAt = existing.DeletedAt
+		if chat.LastIncoming < existing.LastIncoming {
+			chat.LastIncoming = existing.LastIncoming
+		}
+		if chat.IsGroup != existing.IsGroup || chat.Name != existing.Name || chat.LastMessage > existing.LastMessage {
+			md.scheduleSaveLocked()
+		}
+	} else if chat.LastMessage > 0 {
+		md.scheduleSaveLocked()
 	}
 	md.chats[chat.Id] = chat
 }
@@ -159,6 +452,7 @@ func (md *MessageDatabase) UpdateChatUnread(chatID string, unread int) {
 		chat.Unread = len(ids)
 		md.chats[chatID] = chat
 	}
+	md.scheduleSaveLocked()
 	md.chatLock.Unlock()
 }
 
@@ -200,9 +494,39 @@ func (md *MessageDatabase) MarkChatRead(chatID string) []Message {
 		chat.Unread = 0
 		md.chats[chatID] = chat
 	}
+	md.scheduleSaveLocked()
 	md.chatLock.Unlock()
 
 	return cleared
+}
+
+// UpdateContactNames sets the sender id and names of all messages in memory to
+// what names returns for their current sender id, if it returns ok.
+func (md *MessageDatabase) UpdateContactNames(names func(contactID string) (string, string, string, bool)) {
+	md.messageLock.Lock()
+	defer md.messageLock.Unlock()
+	changed := false
+	for chatID, msgs := range md.messages {
+		for idx, msg := range msgs {
+			if msg.ContactId == "" {
+				continue
+			}
+			id, name, short, ok := names(msg.ContactId)
+			if !ok || (id == msg.ContactId && name == msg.ContactName && short == msg.ContactShort) {
+				continue
+			}
+			msg.ContactId, msg.ContactName, msg.ContactShort = id, name, short
+			msgs[idx] = msg
+			md.messagesById[msg.Id] = msg
+			changed = true
+		}
+		md.messages[chatID] = msgs
+	}
+	if changed {
+		md.chatLock.Lock()
+		md.scheduleSaveLocked()
+		md.chatLock.Unlock()
+	}
 }
 
 // MarkMessageRevoked updates a message to show that it was revoked.
@@ -219,6 +543,9 @@ func (md *MessageDatabase) MarkMessageRevoked(messageID string) bool {
 	msg.Kind = MessageKindUnknown
 	md.messagesById[messageID] = msg
 	md.replaceMessageLocked(msg)
+	md.chatLock.Lock()
+	md.scheduleSaveLocked()
+	md.chatLock.Unlock()
 	return true
 }
 
@@ -239,16 +566,31 @@ func (md *MessageDatabase) AddContact(contact Contact) {
 	md.contacts[contact.Id] = contact
 }
 
-// GetChatIds returns chats sorted by most recent message first.
+// GetChatIds returns pinned chats first, the last pinned one first, then the
+// other chats with the most recent message first.
+// Archived is set only for chats that are still archived: unless "keep chats archived"
+// is enabled, WhatsApp unarchives a chat when a message arrives that the user didn't send,
+// without syncing that.
+// Hidden is set for chats without messages since they were deleted, if they ever had any.
 func (md *MessageDatabase) GetChatIds() []Chat {
 	md.chatLock.RLock()
 	defer md.chatLock.RUnlock()
 
 	allChats := make([]Chat, 0, len(md.chats))
 	for _, chat := range md.chats {
+		if chat.Archived && !md.keepArchived && chat.LastIncoming > chat.ArchivedAt {
+			chat.Archived = false
+		}
+		chat.Hidden = !chat.Pinned && chat.LastMessage <= chat.DeletedAt
 		allChats = append(allChats, chat)
 	}
 	sort.Slice(allChats, func(i, j int) bool {
+		if allChats[i].Pinned != allChats[j].Pinned {
+			return allChats[i].Pinned
+		}
+		if allChats[i].Pinned && allChats[i].PinnedAt != allChats[j].PinnedAt {
+			return allChats[i].PinnedAt > allChats[j].PinnedAt
+		}
 		if allChats[i].LastMessage == allChats[j].LastMessage {
 			return allChats[i].Name < allChats[j].Name
 		}
@@ -265,12 +607,7 @@ func (md *MessageDatabase) GetMessages(chatID string) []Message {
 	copy(out, msgs)
 	md.messageLock.RUnlock()
 
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Timestamp == out[j].Timestamp {
-			return out[i].Id < out[j].Id
-		}
-		return out[i].Timestamp < out[j].Timestamp
-	})
+	sortMessages(out)
 	return out
 }
 

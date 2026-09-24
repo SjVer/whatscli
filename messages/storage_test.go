@@ -1,6 +1,14 @@
 package messages
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"google.golang.org/protobuf/proto"
+)
 
 func TestAddMessageAndMarkChatRead(t *testing.T) {
 	db := &MessageDatabase{}
@@ -91,5 +99,171 @@ func TestUpdateChatUnreadMarksLatestIncomingMessages(t *testing.T) {
 	}
 	if unread != 2 {
 		t.Fatalf("expected 2 unread messages, got %d", unread)
+	}
+}
+
+func TestGetChatIdsArchivedHiddenAndOrder(t *testing.T) {
+	db := &MessageDatabase{}
+	db.Init()
+
+	db.AddChat(Chat{Id: "contact@s.whatsapp.net", Name: "Contact without chat"})
+	db.UpdateChatLastMessage("pinned@s.whatsapp.net", 50)
+	db.SetChatPinned("pinned@s.whatsapp.net", true, 10)
+	// pinned chats are ordered by when they were pinned, not by their messages
+	db.UpdateChatLastMessage("pinned-later@s.whatsapp.net", 40)
+	db.SetChatPinned("pinned-later@s.whatsapp.net", true, 20)
+	db.UpdateChatLastMessage("recent@s.whatsapp.net", 300)
+	db.UpdateChatLastMessage("archived@s.whatsapp.net", 200)
+	db.SetChatArchived("archived@s.whatsapp.net", true, 200)
+	db.SetChatArchived("unarchived@s.whatsapp.net", true, 100)
+	db.AddMessage(Message{Id: "in", ChatId: "unarchived@s.whatsapp.net", Timestamp: 250}, false)
+	// messages sent by the user don't unarchive, only move the chat up in the archive
+	db.SetChatArchived("replied@s.whatsapp.net", true, 100)
+	db.AddMessage(Message{Id: "out", ChatId: "replied@s.whatsapp.net", Timestamp: 260, FromMe: true}, false)
+	db.UpdateChatLastMessage("deleted@s.whatsapp.net", 150)
+	db.SetChatDeleted("deleted@s.whatsapp.net", 150)
+
+	chats := db.GetChatIds()
+	byId := make(map[string]Chat)
+	var order []string
+	for _, chat := range chats {
+		byId[chat.Id] = chat
+		if !chat.Hidden && !chat.Archived {
+			order = append(order, chat.Id)
+		}
+	}
+
+	expected := []string{"pinned-later@s.whatsapp.net", "pinned@s.whatsapp.net", "recent@s.whatsapp.net", "unarchived@s.whatsapp.net"}
+	if len(order) != len(expected) {
+		t.Fatalf("expected shown chats %v, got %v", expected, order)
+	}
+	for idx := range expected {
+		if order[idx] != expected[idx] {
+			t.Fatalf("expected shown chats %v, got %v", expected, order)
+		}
+	}
+	if !byId["archived@s.whatsapp.net"].Archived {
+		t.Fatal("expected chat without messages since archiving to stay archived")
+	}
+	if !byId["replied@s.whatsapp.net"].Archived {
+		t.Fatal("expected chat with only own messages since archiving to stay archived")
+	}
+	if !byId["contact@s.whatsapp.net"].Hidden || !byId["deleted@s.whatsapp.net"].Hidden {
+		t.Fatal("expected chats without messages to be hidden")
+	}
+
+	// a new message brings a deleted chat back, as on the phone
+	db.UpdateChatLastMessage("deleted@s.whatsapp.net", 400)
+	for _, chat := range db.GetChatIds() {
+		if chat.Id == "deleted@s.whatsapp.net" && chat.Hidden {
+			t.Fatal("expected deleted chat with a new message to be shown")
+		}
+	}
+
+	// with "keep chats archived", new messages don't unarchive
+	db.SetKeepArchived(true)
+	for _, chat := range db.GetChatIds() {
+		if chat.Id == "unarchived@s.whatsapp.net" && !chat.Archived {
+			t.Fatal("expected chat to stay archived with keep chats archived")
+		}
+	}
+}
+
+func TestSetChatUnarchivedOverridesOlderArchiveRecords(t *testing.T) {
+	db := &MessageDatabase{}
+	db.Init()
+
+	// the phone lists the chat as not archived, for a message whatscli couldn't parse
+	db.SetChatArchived("pap@s.whatsapp.net", true, 100)
+	db.SetChatUnarchived("pap@s.whatsapp.net", 200)
+	// archive records synced later at startup don't archive it again
+	db.SetChatArchived("pap@s.whatsapp.net", true, 100)
+	db.UpdateChatLastMessage("pap@s.whatsapp.net", 200)
+
+	for _, chat := range db.GetChatIds() {
+		if chat.Id == "pap@s.whatsapp.net" && chat.Archived {
+			t.Fatal("expected chat that the phone lists as not archived to stay unarchived")
+		}
+	}
+}
+
+func TestMergeChatMovesLIDChatToPhoneNumber(t *testing.T) {
+	db := &MessageDatabase{}
+	db.Init()
+
+	db.AddChat(Chat{Id: "123@s.whatsapp.net", Name: "Alice"})
+	db.AddMessage(Message{Id: "m1", ChatId: "456@lid", Timestamp: 300}, false)
+	db.SetChatArchived("456@lid", true, 300)
+
+	db.MergeChat("456@lid", "123@s.whatsapp.net")
+
+	chats := db.GetChatIds()
+	if len(chats) != 1 {
+		t.Fatalf("expected 1 chat after merging, got %d", len(chats))
+	}
+	chat := chats[0]
+	if chat.Id != "123@s.whatsapp.net" || chat.Name != "Alice" || !chat.Archived || chat.LastMessage != 300 || chat.LastIncoming != 300 {
+		t.Fatalf("unexpected merged chat %+v", chat)
+	}
+	msgs := db.GetMessages("123@s.whatsapp.net")
+	if len(msgs) != 1 || msgs[0].ChatId != "123@s.whatsapp.net" {
+		t.Fatalf("expected message to move to the phone number chat, got %+v", msgs)
+	}
+	if msg, _ := db.GetMessage("m1"); msg.ChatId != "123@s.whatsapp.net" {
+		t.Fatalf("expected message lookup to use the phone number chat, got %s", msg.ChatId)
+	}
+}
+
+func TestNewestMessagesAreSavedAndLoaded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chats.json")
+	db := &MessageDatabase{}
+	db.Init()
+	if err := db.LoadChats(path, 2); err != nil {
+		t.Fatal(err)
+	}
+	db.AddMessage(Message{Id: "oldest", ChatId: "123@s.whatsapp.net", Timestamp: 50, Text: "oldest"}, false)
+	db.AddMessage(Message{Id: "old", ChatId: "123@s.whatsapp.net", Timestamp: 100, Text: "old"}, false)
+	db.AddMessage(Message{Id: "new", ChatId: "123@s.whatsapp.net", Timestamp: 200, Text: "new",
+		RawMessage: &waProto.Message{Conversation: proto.String("new")}}, false)
+	db.saveChats()
+
+	loaded := &MessageDatabase{}
+	loaded.Init()
+	if err := loaded.LoadChats(path, 2); err != nil {
+		t.Fatal(err)
+	}
+	msgs := loaded.GetMessages("123@s.whatsapp.net")
+	if len(msgs) != 2 || msgs[0].Id != "old" || msgs[1].Id != "new" || msgs[1].Text != "new" {
+		t.Fatalf("expected only the 2 newest messages to be loaded, got %+v", msgs)
+	}
+	if msgs[1].RawMessage.GetConversation() != "new" {
+		t.Fatal("expected the raw message of a saved message to be loaded")
+	}
+	if oldest, ok := loaded.GetOldestMessage("123@s.whatsapp.net"); !ok || oldest.Id != "old" {
+		t.Fatal("expected the oldest saved message to be the anchor for loading older ones")
+	}
+}
+
+func TestLoadChatsReadsNewestMessageOfEarlierVersions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chats.json")
+	raw, _ := proto.Marshal(&waProto.Message{Conversation: proto.String("hi")})
+	saved, _ := json.Marshal([]map[string]any{{
+		"Id":          "123@s.whatsapp.net",
+		"LastMessage": 200,
+		"Newest":      Message{Id: "new", ChatId: "123@s.whatsapp.net", Timestamp: 200, Text: "hi"},
+		"NewestRaw":   raw,
+	}})
+	if err := os.WriteFile(path, saved, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	db := &MessageDatabase{}
+	db.Init()
+	if err := db.LoadChats(path, 10); err != nil {
+		t.Fatal(err)
+	}
+	msgs := db.GetMessages("123@s.whatsapp.net")
+	if len(msgs) != 1 || msgs[0].Id != "new" || msgs[0].RawMessage.GetConversation() != "hi" {
+		t.Fatalf("expected the newest message saved by an earlier version, got %+v", msgs)
 	}
 }

@@ -1,4 +1,4 @@
-//this package manages the messages
+// this package manages the messages
 package messages
 
 import (
@@ -27,6 +27,8 @@ type SessionStatus struct {
 	BatteryPowersave bool
 	Connected        bool
 	LastSeen         string
+	// what whatscli is waiting for, e.g. messages from the phone
+	Activity string
 }
 
 // message struct for battery messages
@@ -75,7 +77,13 @@ type Message struct {
 	MimeType     string
 	FileName     string
 	Unread       bool
-	RawMessage   *waProto.Message
+	RawMessage   *waProto.Message `json:"-"` // saved as SavedMessage.Raw
+}
+
+// SavedMessage is a message as it is saved with its chat.
+type SavedMessage struct {
+	Message
+	Raw []byte `json:",omitempty"`
 }
 
 // internal contact representation to abstract from message lib
@@ -86,6 +94,22 @@ type Chat struct {
 	Unread  int
 	//TODO: convert to uint64
 	LastMessage int64
+	Pinned      bool
+	// time when the chat was pinned, the last pinned chat is listed first
+	PinnedAt int64
+	Archived bool
+	// time of the last message that wasn't sent by the user
+	LastIncoming int64
+	// time of the last message when the chat was archived
+	ArchivedAt int64
+	// time of the last message when the chat was deleted
+	DeletedAt int64
+	// the newest messages, only used to save and load them: the phone only
+	// sends messages before a message it knows, see RequestChatHistory
+	Recent []SavedMessage `json:",omitempty"`
+	// set by GetChatIds for chats that WhatsApp doesn't list: chats without
+	// messages, e.g. contacts that were never written to, or deleted chats
+	Hidden bool `json:"-"`
 }
 
 type Contact struct {

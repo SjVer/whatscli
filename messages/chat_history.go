@@ -1,0 +1,145 @@
+package messages
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/normen/whatscli/config"
+	"go.mau.fi/whatsmeow/types"
+)
+
+// historyTimeout is how long to wait for the phone to answer a request.
+const historyTimeout = 30 * time.Second
+
+// historyRequests tracks the chats whose messages were requested from the phone.
+type historyRequests struct {
+	lock    sync.Mutex
+	pending map[string]*time.Timer
+	// chats that were loaded from the phone since whatscli started
+	loaded map[string]bool
+}
+
+// loadChatOnce requests the messages before the newest one the first time a
+// chat is opened after starting whatscli. Returns whether it was the first time.
+func (sm *SessionManager) loadChatOnce(chatID string) bool {
+	sm.history.lock.Lock()
+	if sm.history.loaded == nil {
+		sm.history.loaded = make(map[string]bool)
+	}
+	first := !sm.history.loaded[chatID]
+	sm.history.loaded[chatID] = true
+	sm.history.lock.Unlock()
+	return first
+}
+
+// RequestChatHistory asks the phone for the messages of a chat before the oldest
+// one in memory. Only the newest message of each chat is saved, so this is how
+// a chat is loaded after starting whatscli. The phone doesn't answer requests
+// that don't refer to a message it knows.
+func (sm *SessionManager) RequestChatHistory(chatID string) error {
+	if sm.client == nil || !sm.client.IsConnected() {
+		return errors.New("not connected to WhatsApp")
+	}
+	jid, err := types.ParseJID(chatID)
+	if err != nil {
+		return fmt.Errorf("invalid chat: %v", err)
+	}
+	// the phone knows one-to-one chats under their LID
+	if jid.Server == types.DefaultUserServer {
+		if lid, err := sm.client.Store.LIDs.GetLIDForPN(context.Background(), jid); err == nil && !lid.IsEmpty() {
+			jid = lid
+		}
+	}
+	oldest, ok := sm.db.GetOldestMessage(chatID)
+	if !ok {
+		return errors.New("no message of this chat is known yet, it loads once a message arrives or after /relink")
+	}
+	anchor := &types.MessageInfo{
+		MessageSource: types.MessageSource{Chat: jid, IsFromMe: oldest.FromMe, IsGroup: jid.Server == types.GroupServer},
+		ID:            types.MessageID(oldest.Id),
+		Timestamp:     time.Unix(int64(oldest.Timestamp), 0),
+	}
+	if sender, err := types.ParseJID(oldest.SenderId); err == nil {
+		anchor.Sender = sender
+	}
+
+	sm.history.lock.Lock()
+	if sm.history.pending == nil {
+		sm.history.pending = make(map[string]*time.Timer)
+	}
+	if _, ok := sm.history.pending[chatID]; ok {
+		sm.history.lock.Unlock()
+		return nil // already requested
+	}
+	sm.history.pending[chatID] = time.AfterFunc(historyTimeout, func() {
+		if sm.finishHistoryRequest(chatID) {
+			sm.uiHandler.PrintText(fmt.Sprintf("Your phone didn't send messages for %s, is it online?", sm.db.GetIdName(chatID)))
+		}
+	})
+	sm.history.lock.Unlock()
+	sm.updateActivity()
+
+	count := historyCount()
+	if sm.Log != nil {
+		sm.Log.Debugf("Requesting %d messages of %s before message %s from %s", count, chatID, anchor.ID, anchor.Timestamp)
+	}
+	req := sm.client.BuildHistorySyncRequest(anchor, count)
+	if _, err = sm.client.SendPeerMessage(context.Background(), req); err != nil {
+		sm.finishHistoryRequest(chatID)
+		return fmt.Errorf("failed to request messages from your phone: %v", err)
+	}
+	return nil
+}
+
+// historyCount returns how many messages are loaded from the phone at a time,
+// and saved of each chat.
+func historyCount() int {
+	if count := config.Config.General.BacklogMsgQuantity; count > 0 {
+		return count
+	}
+	return 50 // recommended by whatsmeow
+}
+
+// HistoryPending returns whether messages of a chat were requested and not received yet.
+func (sm *SessionManager) HistoryPending(chatID string) bool {
+	sm.history.lock.Lock()
+	defer sm.history.lock.Unlock()
+	_, ok := sm.history.pending[chatID]
+	return ok
+}
+
+// finishHistoryRequest marks a request as answered, and returns whether it was pending.
+func (sm *SessionManager) finishHistoryRequest(chatID string) bool {
+	sm.history.lock.Lock()
+	timer, ok := sm.history.pending[chatID]
+	if ok {
+		timer.Stop()
+		delete(sm.history.pending, chatID)
+	}
+	sm.history.lock.Unlock()
+	if ok {
+		sm.updateActivity()
+	}
+	return ok
+}
+
+// updateActivity shows in the status bar whether messages are being loaded.
+func (sm *SessionManager) updateActivity() {
+	sm.history.lock.Lock()
+	activity := ""
+	if count := len(sm.history.pending); count == 1 {
+		activity = "loading messages..."
+	} else if count > 1 {
+		activity = fmt.Sprintf("loading messages of %d chats...", count)
+	}
+	sm.history.lock.Unlock()
+
+	sm.statusLock.Lock()
+	sm.statusInfo.Activity = activity
+	status := sm.statusInfo
+	sm.statusLock.Unlock()
+	sm.uiHandler.SetStatus(status)
+}
