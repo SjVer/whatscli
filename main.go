@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -33,6 +34,14 @@ var infoBar *tview.TextView
 
 var chatRoot *tview.TreeNode
 var archivedExpanded bool = false
+
+// all chats as last set by the session manager, and the text the chat list is filtered by
+var allChats []messages.Chat
+var chatSearch string
+
+// all messages of the displayed chat, and the text they are filtered by
+var chatMessages []messages.Message
+var messageSearch string
 var app *tview.Application
 
 var sessionManager *messages.SessionManager
@@ -320,6 +329,27 @@ func handleMessagesMove(amount int) func(ev *tcell.EventKey) *tcell.EventKey {
 	}
 }
 
+// clears the chat search, or else goes back to Chats, the root of the chat
+// list, and closes the archived chats
+func handleExitChats(ev *tcell.EventKey) *tcell.EventKey {
+	if chatSearch != "" {
+		chatSearch = ""
+		renderChats()
+		return nil
+	}
+	archivedExpanded = false
+	for _, node := range chatRoot.GetChildren() {
+		if node.GetReference() == "archived" {
+			node.SetExpanded(false)
+		}
+	}
+	if treeView.GetCurrentNode() != chatRoot {
+		treeView.SetCurrentNode(chatRoot)
+		SetDisplayedChat(messages.Chat{})
+	}
+	return nil
+}
+
 func handleChatPanelUp(ev *tcell.EventKey) *tcell.EventKey {
 	//TODO: scroll selection in treeView? or chatRoot? How?
 	return ev
@@ -348,6 +378,10 @@ func handleMessagesFirst(ev *tcell.EventKey) *tcell.EventKey {
 }
 
 func handleExitMessages(ev *tcell.EventKey) *tcell.EventKey {
+	if messageSearch != "" {
+		Search("")
+		return nil
+	}
 	if curRegions == nil || len(curRegions) == 0 {
 		return nil
 	}
@@ -433,6 +467,7 @@ func LoadShortcuts() {
 	keysMessages.SetRune(tcell.ModCtrl, 'd', handleMessagesMove(10))
 	textView.SetInputCapture(keysMessages.Capture)
 	keysChatPanel := cbind.NewConfiguration()
+	keysChatPanel.SetKey(tcell.ModNone, tcell.KeyEscape, handleExitChats)
 	keysChatPanel.SetRune(tcell.ModCtrl, 'u', handleChatPanelUp)
 	keysChatPanel.SetRune(tcell.ModCtrl, 'd', handleChatPanelDown)
 	treeView.SetInputCapture(keysChatPanel.Capture)
@@ -480,6 +515,8 @@ func PrintCommands() {
 	fmt.Fprintln(textView, "[-::-]Chat[-::-]")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"backlog [::-]or[::b]", config.Config.Keymap.CommandBacklog, "[::-] = load next", config.Config.General.BacklogMsgQuantity, "previous messages")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"read [::-]or[::b]", config.Config.Keymap.CommandRead, "[::-] = mark new messages in chat as read")
+	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"search[::-] text  = Search the loaded messages of the chat, or chats and groups when Chats is selected")
+	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"search[::-]  = Show everything again")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"upload[::-] /path/to/file  = Upload any file as document")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"sendimage[::-] /path/to/file  = Send image message")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"sendvideo[::-] /path/to/file  = Send video message")
@@ -501,11 +538,16 @@ func PrintCommands() {
 
 // called when text is entered by the user
 func EnterCommand(key tcell.Key) {
-	if sndTxt == "" {
+	if key == tcell.KeyEsc {
+		// clear the input first, then the search results
+		if sndTxt != "" {
+			textInput.SetText("")
+		} else if messageSearch != "" || chatSearch != "" {
+			Search("")
+		}
 		return
 	}
-	if key == tcell.KeyEsc {
-		textInput.SetText("")
+	if sndTxt == "" {
 		return
 	}
 	cmdPrefix := config.Config.General.CmdPrefix
@@ -516,6 +558,11 @@ func EnterCommand(key tcell.Key) {
 	}
 	if sndTxt == cmdPrefix+"commands" {
 		PrintCommands()
+		textInput.SetText("")
+		return
+	}
+	if sndTxt == cmdPrefix+"search" || strings.HasPrefix(sndTxt, cmdPrefix+"search ") {
+		Search(strings.TrimSpace(strings.TrimPrefix(sndTxt, cmdPrefix+"search")))
 		textInput.SetText("")
 		return
 	}
@@ -659,6 +706,8 @@ func UpdateStatusBar(statusInfo messages.SessionStatus) {
 func SetDisplayedChat(wid messages.Chat) {
 	//TODO: how to get chat to set
 	currentReceiver = wid
+	chatMessages = nil
+	messageSearch = ""
 	textView.Clear()
 	textView.SetTitle(wid.Name)
 	sessionManager.CommandChannel <- messages.Command{"select", []string{currentReceiver.Id}}
@@ -669,7 +718,7 @@ func getMessagesString(msgs []messages.Message) string {
 	out := ""
 	for idx := range msgs {
 		var prev *messages.Message
-		if idx > 0 {
+		if idx > 0 && messageSearch == "" {
 			prev = &msgs[idx-1]
 		}
 		out += getTextMessageString(&msgs[idx], prev)
@@ -714,7 +763,7 @@ func getTextMessageString(msg *messages.Message, prev *messages.Message) string 
 	colorMe := config.Config.Colors.ChatMe
 	colorContact := config.Config.Colors.ChatContact
 	out := ""
-	text := tview.Escape(msg.Text)
+	text := highlightSearch(msg.Text, messageSearch)
 	if msg.Forwarded {
 		text = "[" + config.Config.Colors.ForwardedText + "]" + text + "[-]"
 	}
@@ -746,8 +795,12 @@ func (u UiHandler) NewMessage(msg messages.Message) {
 	//TODO: its stupid to "go" this as its supposed to run
 	//on the ui thread anyway. But QueueUpdate blocks...?
 	go app.QueueUpdateDraw(func() {
+		chatMessages = append(chatMessages, msg)
+		if !messageMatches(msg, messageSearch) {
+			return
+		}
 		var prev *messages.Message
-		if len(curRegions) > 0 {
+		if len(curRegions) > 0 && messageSearch == "" {
 			prev = &curRegions[len(curRegions)-1]
 		}
 		PrintText(getTextMessageString(&msg, prev))
@@ -757,79 +810,165 @@ func (u UiHandler) NewMessage(msg messages.Message) {
 
 func (u UiHandler) NewScreen(msgs []messages.Message) {
 	go app.QueueUpdateDraw(func() {
-		textView.Clear()
-		screen := getMessagesString(msgs)
-		textView.SetText(screen)
-		curRegions = msgs
-		if screen == "" {
-			if currentReceiver.Id == "" {
-				PrintHelp()
-			} else {
-				PrintText("[::d] ~~~ no messages, press " + config.Config.Keymap.CommandBacklog + " to load backlog if available ~~~[::-]")
+		chatMessages = msgs
+		renderMessages()
+	})
+}
+
+// shows the messages of the displayed chat, or the ones matching the search
+func renderMessages() {
+	textView.Clear()
+	shown := chatMessages
+	if messageSearch != "" {
+		shown = nil
+		for _, msg := range chatMessages {
+			if messageMatches(msg, messageSearch) {
+				shown = append(shown, msg)
 			}
 		}
-	})
+		PrintText(fmt.Sprintf("[::d]%d of %d loaded messages contain \"%s\", press %s to load older ones, %ssearch to show all[::-]\n",
+			len(shown), len(chatMessages), tview.Escape(messageSearch), config.Config.Keymap.CommandBacklog, config.Config.General.CmdPrefix))
+	}
+	screen := getMessagesString(shown)
+	fmt.Fprint(textView, screen)
+	curRegions = shown
+	if screen == "" && messageSearch == "" {
+		if currentReceiver.Id == "" {
+			PrintHelp()
+		} else {
+			PrintText("[::d] ~~~ no messages, press " + config.Config.Keymap.CommandBacklog + " to load backlog if available ~~~[::-]")
+		}
+	}
+}
+
+// Search filters the chat list when Chats is selected, or the messages of the
+// displayed chat. An empty text shows everything again.
+func Search(text string) {
+	if currentReceiver.Id == "" || (text == "" && messageSearch == "") {
+		chatSearch = text
+		renderChats()
+		if text != "" {
+			// Down selects the first result
+			treeView.SetCurrentNode(chatRoot)
+			app.SetFocus(treeView)
+		}
+		return
+	}
+	// after showing everything again, stay at the selected search result
+	selected := textView.GetHighlights()
+	messageSearch = text
+	renderMessages()
+	if text == "" && len(selected) > 0 {
+		textView.Highlight(selected[0])
+		textView.ScrollToHighlight()
+	} else {
+		textView.ScrollToEnd()
+	}
+}
+
+// messageMatches returns whether the text of a message contains the search, ignoring case
+func messageMatches(msg messages.Message, search string) bool {
+	return search == "" || strings.Contains(strings.ToLower(msg.Text), strings.ToLower(search))
+}
+
+// chatMatches returns whether the name or number of a chat contains the search, ignoring case
+func chatMatches(chat messages.Chat, search string) bool {
+	search = strings.ToLower(search)
+	return strings.Contains(strings.ToLower(chat.Name), search) || strings.Contains(strings.Split(chat.Id, "@")[0], search)
+}
+
+// highlightSearch escapes text for the message panel, and highlights where it contains the search
+func highlightSearch(text string, search string) string {
+	if search == "" {
+		return tview.Escape(text)
+	}
+	out := ""
+	last := 0
+	for _, match := range regexp.MustCompile("(?i)"+regexp.QuoteMeta(search)).FindAllStringIndex(text, -1) {
+		out += tview.Escape(text[last:match[0]]) + "[black:yellow]" + tview.Escape(text[match[0]:match[1]]) + "[-:-]"
+		last = match[1]
+	}
+	return out + tview.Escape(text[last:])
 }
 
 // loads the chat data from storage to the TreeView
 func (u UiHandler) SetChats(ids []messages.Chat) {
 	go app.QueueUpdateDraw(func() {
-		chatRoot.ClearChildren()
-		archivedNode := tview.NewTreeNode("Archived").
-			SetReference("archived").
-			SetSelectable(true).
-			SetColor(tcell.ColorNames[config.Config.Colors.ListHeader]).
-			SetExpanded(archivedExpanded)
-		oldId := currentReceiver.Id
-		for _, element := range ids {
-			if element.Hidden {
+		allChats = ids
+		renderChats()
+	})
+}
+
+// shows the chats in the chat list, or the ones matching the search, including
+// archived chats and contacts without messages
+func renderChats() {
+	chatRoot.ClearChildren()
+	archivedNode := tview.NewTreeNode("Archived").
+		SetReference("archived").
+		SetSelectable(true).
+		SetColor(tcell.ColorNames[config.Config.Colors.ListHeader]).
+		SetExpanded(archivedExpanded)
+	oldId := currentReceiver.Id
+	for _, element := range allChats {
+		if chatSearch != "" {
+			if !chatMatches(element, chatSearch) {
 				continue
 			}
-			name := element.Name
-			if name == "" {
-				name = strings.TrimSuffix(strings.TrimSuffix(element.Id, messages.GROUPSUFFIX), messages.CONTACTSUFFIX)
-			}
-			if element.Pinned {
-				name = "📌 " + name
-			}
-			if element.Unread > 0 {
-				name += " ([" + config.Config.Colors.UnreadCount + "]" + fmt.Sprint(element.Unread) + "[-])"
-				//tim := time.Unix(element.LastMessage, 0)
-				//sin := time.Since(tim)
-				//since := fmt.Sprintf("%s", sin)
-				//time := tim.Format("02-01-06 15:04:05")
-				//name += since
-			}
-			node := tview.NewTreeNode(name).
-				SetReference(element).
-				SetSelectable(true)
-			if element.IsGroup {
-				node.SetColor(tcell.ColorNames[config.Config.Colors.ListGroup])
-			} else {
-				node.SetColor(tcell.ColorNames[config.Config.Colors.ListContact])
-			}
-			// store new currentReceiver, else the selection on the left goes off
-			if element.Id == oldId {
-				currentReceiver = element
-			}
+		} else if element.Hidden {
+			continue
+		}
+		name := element.Name
+		if name == "" {
+			name = strings.TrimSuffix(strings.TrimSuffix(element.Id, messages.GROUPSUFFIX), messages.CONTACTSUFFIX)
+		}
+		if element.Pinned {
+			name = "📌 " + name
+		}
+		if element.Unread > 0 {
+			name += " ([" + config.Config.Colors.UnreadCount + "]" + fmt.Sprint(element.Unread) + "[-])"
+			//tim := time.Unix(element.LastMessage, 0)
+			//sin := time.Since(tim)
+			//since := fmt.Sprintf("%s", sin)
+			//time := tim.Format("02-01-06 15:04:05")
+			//name += since
+		}
+		node := tview.NewTreeNode(name).
+			SetReference(element).
+			SetSelectable(true)
+		if element.IsGroup {
+			node.SetColor(tcell.ColorNames[config.Config.Colors.ListGroup])
+		} else {
+			node.SetColor(tcell.ColorNames[config.Config.Colors.ListContact])
+		}
+		// store new currentReceiver, else the selection on the left goes off
+		if element.Id == oldId {
+			currentReceiver = element
+		}
+		if element.Archived && chatSearch == "" {
+			archivedNode.AddChild(node)
+		} else {
 			if element.Archived {
-				archivedNode.AddChild(node)
-			} else {
-				chatRoot.AddChild(node)
+				node.SetText(name + " [::d](archived)[::-]")
 			}
-			if element.Id == currentReceiver.Id {
-				if element.Archived {
-					archivedExpanded = true
-					archivedNode.SetExpanded(true)
-				}
-				treeView.SetCurrentNode(node)
+			chatRoot.AddChild(node)
+		}
+		if element.Id == currentReceiver.Id {
+			if element.Archived {
+				archivedExpanded = true
+				archivedNode.SetExpanded(true)
 			}
+			treeView.SetCurrentNode(node)
 		}
-		if count := len(archivedNode.GetChildren()); count > 0 {
-			archivedNode.SetText(fmt.Sprintf("Archived (%d)", count))
-			chatRoot.AddChild(archivedNode)
-		}
-	})
+	}
+	if count := len(archivedNode.GetChildren()); count > 0 {
+		archivedNode.SetText(fmt.Sprintf("Archived (%d)", count))
+		chatRoot.AddChild(archivedNode)
+	}
+	if chatSearch != "" {
+		chatRoot.SetText(fmt.Sprintf("Chats with \"%s\" (%d)", tview.Escape(chatSearch), len(chatRoot.GetChildren())))
+	} else {
+		chatRoot.SetText("Chats")
+	}
 }
 
 func (u UiHandler) PrintError(err error) {

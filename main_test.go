@@ -68,3 +68,25 @@ func TestFormatMessageTime(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchMatching(t *testing.T) {
+	chat := messages.Chat{Id: "31612345678@s.whatsapp.net", Name: "Anna :)"}
+	for search, expected := range map[string]bool{"roos": true, "ROOS": true, "3161234": true, "pap": false} {
+		if chatMatches(chat, search) != expected {
+			t.Errorf("chat search %q: expected %v", search, expected)
+		}
+	}
+	msg := messages.Message{Text: "See you at the Station"}
+	if !messageMatches(msg, "station") || messageMatches(msg, "train") || !messageMatches(msg, "") {
+		t.Error("expected message search to ignore case and match everything when empty")
+	}
+}
+
+func TestHighlightSearch(t *testing.T) {
+	if actual := highlightSearch("a Cat and a cat [x]", "cat"); actual != "a [black:yellow]Cat[-:-] and a [black:yellow]cat[-:-] [x[]" {
+		t.Fatalf("unexpected highlight %q", actual)
+	}
+	if actual := highlightSearch("[x]", ""); actual != "[x[]" {
+		t.Fatalf("expected text to be escaped without a search, got %q", actual)
+	}
+}
