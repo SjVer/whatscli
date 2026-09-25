@@ -251,15 +251,15 @@ func TestSetReaction(t *testing.T) {
 	}
 	db.AddMessage(Message{Id: "m1", ChatId: "123@s.whatsapp.net", Timestamp: 100}, false)
 
-	if chatID, ok := db.SetReaction("m1", "456@s.whatsapp.net", "👍"); !ok || chatID != "123@s.whatsapp.net" {
+	if chatID, ok := db.SetReaction("m1", "456@s.whatsapp.net", "👍", 150); !ok || chatID != "123@s.whatsapp.net" {
 		t.Fatal("expected the reaction to be set on the loaded message")
 	}
-	db.SetReaction("m1", ReactorMe, "😭")
-	db.SetReaction("m1", ReactorMe, "❤️") // replaces the own reaction
+	db.SetReaction("m1", ReactorMe, "😭", 150)
+	db.SetReaction("m1", ReactorMe, "❤️", 150) // replaces the own reaction
 	if msg, _ := db.GetMessage("m1"); len(msg.Reactions) != 2 || msg.Reactions[ReactorMe] != "❤️" {
 		t.Fatalf("unexpected reactions %v", msg.Reactions)
 	}
-	db.SetReaction("m1", "456@s.whatsapp.net", "") // removes it
+	db.SetReaction("m1", "456@s.whatsapp.net", "", 150) // removes it
 	db.saveChats()
 
 	loaded := &MessageDatabase{}
@@ -275,7 +275,7 @@ func TestSetReaction(t *testing.T) {
 func TestReactionToMessageLoadedLater(t *testing.T) {
 	db := &MessageDatabase{}
 	db.Init()
-	if _, ok := db.SetReaction("old", "456@s.whatsapp.net", "👍"); ok {
+	if _, ok := db.SetReaction("old", "456@s.whatsapp.net", "👍", 150); ok {
 		t.Fatal("expected the message not to be loaded yet")
 	}
 	db.AddMessage(Message{Id: "old", ChatId: "123@s.whatsapp.net", Timestamp: 100}, false)
@@ -302,5 +302,26 @@ func TestUpdateContactNamesLooksUpEachSenderOnce(t *testing.T) {
 		if msg.ContactId != "123@s.whatsapp.net" || msg.ContactName != "Mam Full" || msg.ContactShort != "Mam" {
 			t.Fatalf("expected the names to be updated, got %+v", msg)
 		}
+	}
+}
+
+func TestReactionTimes(t *testing.T) {
+	db := &MessageDatabase{}
+	db.Init()
+	db.AddMessage(Message{Id: "m1", ChatId: "123@s.whatsapp.net", Timestamp: 100}, false)
+	db.SetReaction("m1", "456@s.whatsapp.net", "👍", 200)
+	if msg, _ := db.GetMessage("m1"); msg.ReactionTimes["456@s.whatsapp.net"] != 200 {
+		t.Fatalf("expected the time of the reaction, got %v", msg.ReactionTimes)
+	}
+	db.SetReaction("m1", "456@s.whatsapp.net", "", 300)
+	if msg, _ := db.GetMessage("m1"); len(msg.ReactionTimes) != 0 {
+		t.Fatalf("expected the time to be removed with the reaction, got %v", msg.ReactionTimes)
+	}
+
+	// reactions to messages loaded later keep their time
+	db.SetReaction("m2", ReactorMe, "❤️", 400)
+	db.AddMessage(Message{Id: "m2", ChatId: "123@s.whatsapp.net", Timestamp: 350}, false)
+	if msg, _ := db.GetMessage("m2"); msg.ReactionTimes[ReactorMe] != 400 || msg.Reactions[ReactorMe] != "❤️" {
+		t.Fatalf("expected the pending reaction with its time, got %+v", msg)
 	}
 }

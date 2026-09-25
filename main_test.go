@@ -303,3 +303,52 @@ func TestCommandsAreColored(t *testing.T) {
 		t.Error("expected a command being typed to be colored")
 	}
 }
+
+func TestReactionLinesInTheChat(t *testing.T) {
+	reactorName = func(reactor string) string { return map[string]string{"pap": "Pap", "me": "You"}[reactor] }
+	messageSearch = ""
+	msgs := []messages.Message{
+		{Id: "1", ContactId: "mam", ContactShort: "Mam", Timestamp: 1000, Text: "are you coming tonight?",
+			Reactions: map[string]string{"pap": "👍"}, ReactionTimes: map[string]int64{"pap": 1100}},
+		{Id: "2", ContactId: "mam", ContactShort: "Mam", Timestamp: 1200, Text: "never mind"},
+	}
+	out := getMessagesString(msgs)
+	first := strings.Index(out, "are you coming")
+	reaction := strings.Index(out, `Pap reacted 👍 to "are you coming tonight?"`)
+	second := strings.Index(out, "never mind")
+	if first < 0 || reaction < first || second < reaction {
+		t.Fatalf("expected the reaction line between the messages, got %q", out)
+	}
+	if !strings.Contains(out, "[::d](") {
+		t.Fatalf("expected the reaction line to be dimmed, got %q", out)
+	}
+	// the message after the reaction starts a new group, with a header
+	if strings.Count(out, "Mam:") != 2 {
+		t.Fatalf("expected a new group after the reaction, got %q", out)
+	}
+	// the reaction is still shown under the message
+	if !strings.Contains(out, "↳") {
+		t.Fatalf("expected the reactions under the message, got %q", out)
+	}
+
+	messageSearch = "coming"
+	defer func() { messageSearch = "" }()
+	if strings.Contains(getMessagesString(msgs), "reacted") {
+		t.Fatal("expected search results to list only messages")
+	}
+}
+
+func TestSplitCommand(t *testing.T) {
+	tests := map[string][]string{
+		"jp2a --color":                   {"jp2a", "--color"},
+		`"C:\Program Files\mpv\mpv.exe"`: {`C:\Program Files\mpv\mpv.exe`},
+		`vlc  --fullscreen "a b"`:        {"vlc", "--fullscreen", "a b"},
+		"   ":                            nil,
+	}
+	for command, expected := range tests {
+		actual := splitCommand(command)
+		if strings.Join(actual, "|") != strings.Join(expected, "|") || len(actual) != len(expected) {
+			t.Errorf("%q: expected %q, got %q", command, expected, actual)
+		}
+	}
+}

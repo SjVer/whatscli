@@ -20,10 +20,14 @@ type IniFile struct {
 }
 
 type General struct {
-	DownloadPath        string
-	PreviewPath         string
-	CmdPrefix           string
-	ShowCommand         string
+	DownloadPath string
+	PreviewPath  string
+	CmdPrefix    string
+	// commands that open attachments, with the file added; the default app if empty
+	ImageCommand        string
+	VideoCommand        string
+	AudioCommand        string
+	DocumentCommand     string
 	EnableNotifications bool
 	UseTerminalBell     bool
 	NotificationTimeout int64
@@ -83,7 +87,6 @@ var Config = IniFile{
 		DownloadPath:        GetHomeDir() + "Downloads",
 		PreviewPath:         GetHomeDir() + "Downloads",
 		CmdPrefix:           "/",
-		ShowCommand:         "jp2a --color",
 		EnableNotifications: false,
 		UseTerminalBell:     false,
 		NotificationTimeout: 60,

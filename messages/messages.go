@@ -14,9 +14,9 @@ type UiMessageHandler interface {
 	SetChats([]Chat)
 	PrintError(error)
 	PrintText(string)
-	PrintFile(string)
 	SetStatus(SessionStatus)
-	OpenFile(string)
+	// OpenFile opens a file or URL with a command, or the default app if it is empty
+	OpenFile(target string, command string)
 	GetWriter() io.Writer
 }
 
@@ -68,8 +68,9 @@ type Message struct {
 	FileName     string
 	Unread       bool
 	RawMessage   *waProto.Message `json:"-"` // saved as SavedMessage.Raw
-	// emoji reactions by who reacted, see ReactorMe
-	Reactions map[string]string `json:",omitempty"`
+	// emoji reactions by who reacted, see ReactorMe, and when they were given
+	Reactions     map[string]string `json:",omitempty"`
+	ReactionTimes map[string]int64  `json:",omitempty"`
 }
 
 // ReactorMe is the key of the user's own reaction in Message.Reactions

@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/normen/whatscli/config"
@@ -188,5 +190,22 @@ func TestEscapeInEmptyInputScrollsToTheNewestMessages(t *testing.T) {
 	textView.Draw(screen)
 	if row, _ := textView.GetScrollOffset(); row == 0 {
 		t.Fatal("expected Escape to scroll the chat down to the newest messages")
+	}
+}
+
+func TestOpenWithCommandShowsItsOutput(t *testing.T) {
+	textView = tview.NewTextView().SetDynamicColors(true)
+	command := "echo"
+	if runtime.GOOS == "windows" {
+		command = "cmd /c echo"
+	}
+	if err := openWithCommand(command, "photo.jpg"); err != nil {
+		t.Fatal(err)
+	}
+	// the command runs in the background
+	for start := time.Now(); !strings.Contains(textView.GetText(true), "photo.jpg"); time.Sleep(10 * time.Millisecond) {
+		if time.Since(start) > 5*time.Second {
+			t.Fatalf("expected the output of the command with the file, got %q", textView.GetText(true))
+		}
 	}
 }

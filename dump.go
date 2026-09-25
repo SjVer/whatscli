@@ -33,8 +33,7 @@ func (c consoleHandler) NewMessage(msg messages.Message)         {}
 func (c consoleHandler) NewScreen(msgs []messages.Message)       {}
 func (c consoleHandler) SetChats(chats []messages.Chat)          {}
 func (c consoleHandler) SetStatus(status messages.SessionStatus) {}
-func (c consoleHandler) PrintFile(path string)                   {}
-func (c consoleHandler) OpenFile(path string)                    {}
+func (c consoleHandler) OpenFile(target string, command string)  {}
 func (c consoleHandler) PrintError(err error) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

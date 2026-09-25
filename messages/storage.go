@@ -27,7 +27,7 @@ type MessageDatabase struct {
 	// how many of the newest messages of each chat are saved
 	savedMessages int
 	// reactions to messages that are not loaded yet
-	pendingReactions map[string]map[string]string
+	pendingReactions map[string]map[string]pendingReaction
 
 	contactLock sync.RWMutex
 	chatLock    sync.RWMutex
@@ -332,8 +332,8 @@ func (md *MessageDatabase) AddMessage(msg Message, markUnread bool) bool {
 	}
 
 	msg.Unread = markUnread
-	for reactor, reaction := range md.pendingReactions[msg.Id] {
-		msg.Reactions = withReaction(msg.Reactions, reactor, reaction)
+	for reactor, pending := range md.pendingReactions[msg.Id] {
+		msg = withReaction(msg, reactor, pending.reaction, pending.at)
 	}
 	delete(md.pendingReactions, msg.Id)
 	md.messagesById[msg.Id] = msg
@@ -502,18 +502,21 @@ func (md *MessageDatabase) MarkChatRead(chatID string) []Message {
 // SetReaction sets the emoji reaction of reactor to a message, an empty reaction
 // removes it. Returns the chat of the message, and false if the message is not
 // loaded yet, in which case the reaction is added when it is.
-func (md *MessageDatabase) SetReaction(messageID, reactor, reaction string) (string, bool) {
+func (md *MessageDatabase) SetReaction(messageID, reactor, reaction string, at int64) (string, bool) {
 	md.messageLock.Lock()
 	defer md.messageLock.Unlock()
 	msg, ok := md.messagesById[messageID]
 	if !ok {
 		if md.pendingReactions == nil {
-			md.pendingReactions = make(map[string]map[string]string)
+			md.pendingReactions = make(map[string]map[string]pendingReaction)
 		}
-		md.pendingReactions[messageID] = withReaction(md.pendingReactions[messageID], reactor, reaction)
+		if md.pendingReactions[messageID] == nil {
+			md.pendingReactions[messageID] = make(map[string]pendingReaction)
+		}
+		md.pendingReactions[messageID][reactor] = pendingReaction{reaction, at}
 		return "", false
 	}
-	msg.Reactions = withReaction(msg.Reactions, reactor, reaction)
+	msg = withReaction(msg, reactor, reaction, at)
 	md.messagesById[messageID] = msg
 	md.replaceMessageLocked(msg)
 	md.chatLock.Lock()
@@ -522,17 +525,31 @@ func (md *MessageDatabase) SetReaction(messageID, reactor, reaction string) (str
 	return msg.ChatId, true
 }
 
-// withReaction returns a copy of reactions with the reaction of reactor set,
-// as messages are copied and would otherwise share the map
-func withReaction(reactions map[string]string, reactor, reaction string) map[string]string {
-	updated := make(map[string]string, len(reactions)+1)
-	for key, value := range reactions {
-		updated[key] = value
+// pendingReaction is a reaction to a message that is not loaded yet
+type pendingReaction struct {
+	reaction string
+	at       int64
+}
+
+// withReaction returns msg with the reaction of reactor at a time set, or
+// removed if it is empty
+func withReaction(msg Message, reactor, reaction string, at int64) Message {
+	msg.Reactions = withValue(msg.Reactions, reactor, reaction, reaction == "")
+	msg.ReactionTimes = withValue(msg.ReactionTimes, reactor, at, reaction == "")
+	return msg
+}
+
+// withValue returns a copy of values with the value of key set, or removed, as
+// messages are copied and would otherwise share the map
+func withValue[T any](values map[string]T, key string, value T, remove bool) map[string]T {
+	updated := make(map[string]T, len(values)+1)
+	for k, v := range values {
+		updated[k] = v
 	}
-	if reaction == "" {
-		delete(updated, reactor)
+	if remove {
+		delete(updated, key)
 	} else {
-		updated[reactor] = reaction
+		updated[key] = value
 	}
 	if len(updated) == 0 {
 		return nil

@@ -398,9 +398,11 @@ func (sm *SessionManager) loadRecentChats() {
 
 	// The app state holds the pinned and archived state of chats, and the last
 	// message time of chats that were read, marked unread or archived on another
-	// device. Re-fetch it fully so that every chat is emitted as an event.
+	// device. Get what changed since the last sync; the rest is saved with the
+	// chats. Syncing everything again would also undo a repair by the phone, as
+	// the server keeps the patches that didn't add up, see recoverAppState.
 	if hasAppStateKeys {
-		sm.printAppStateError(sm.client.FetchAppState(context.Background(), appstate.WAPatchRegularLow, true, false), appstate.WAPatchRegularLow)
+		sm.printAppStateError(sm.client.FetchAppState(context.Background(), appstate.WAPatchRegularLow, false, false), appstate.WAPatchRegularLow)
 		sm.uiHandler.SetChats(sm.db.GetChatIds())
 	}
 	signal(sm.ChatsLoaded, struct{}{})
@@ -658,11 +660,9 @@ func (sm *SessionManager) execCommand(command Command) {
 			sm.printCommandUsage("info", "[message-id[]")
 		}
 	case "download":
-		sm.downloadCommand(command.Params, false, false)
-	case "open":
-		sm.downloadCommand(command.Params, true, false)
-	case "show":
-		sm.downloadCommand(command.Params, true, true)
+		sm.downloadCommand(command.Params, false)
+	case "open", "show":
+		sm.downloadCommand(command.Params, true)
 	case "url":
 		sm.openMessageURL(command.Params)
 	case "upload":
@@ -801,24 +801,26 @@ func (sm *SessionManager) setCurrentChatArchived(archive bool) {
 }
 
 // sendAppState sends a change of chat settings to the phone. When the phone
-// changed them too and whatsmeow's copy doesn't match anymore, the server
-// refuses the change and whatsmeow can't catch up with the patches it gets
-// back. Syncing everything again, like at startup, fixes that, so the change
-// is sent once more after that.
+// changed them too, the server refuses the change until whatsmeow has caught
+// up, so it syncs and sends the change once more. When the synced settings
+// don't add up, the phone is asked to repair them, see recoverAppState.
 func (sm *SessionManager) sendAppState(patch appstate.PatchInfo) error {
 	ctx := context.Background()
+	repairing := errors.New("the chat settings are being repaired by your phone, try again in a moment")
 	err := sm.client.SendAppState(ctx, patch)
 	if err == nil {
 		return nil
+	} else if sm.recoverAppState(err, patch.Type) {
+		return repairing
 	}
 	if sm.Log != nil {
-		sm.Log.Warnf("Sending %s failed, syncing it again and retrying: %v", patch.Type, err)
+		sm.Log.Warnf("Sending %s failed, syncing it and retrying: %v", patch.Type, err)
 	}
-	if syncErr := sm.client.FetchAppState(ctx, patch.Type, true, false); syncErr != nil {
+	if syncErr := sm.client.FetchAppState(ctx, patch.Type, false, false); syncErr != nil {
 		if sm.recoverAppState(syncErr, patch.Type) {
-			return errors.New("the chat settings are being repaired by your phone, try again in a moment")
+			return repairing
 		}
-		return fmt.Errorf("%v (syncing again failed too: %v)", err, syncErr)
+		return fmt.Errorf("%v (syncing failed too: %v)", err, syncErr)
 	}
 	return sm.client.SendAppState(ctx, patch)
 }
@@ -878,13 +880,12 @@ func (sm *SessionManager) markChatRead(chatID string) (int, error) {
 	return len(unreadMessages), failed
 }
 
-func (sm *SessionManager) downloadCommand(params []string, preview, show bool) {
+// downloadCommand downloads the attachment of a message, and opens it with open.
+func (sm *SessionManager) downloadCommand(params []string, open bool) {
 	if !checkParam(params, 1) {
 		name := "download"
-		if preview && !show {
+		if open {
 			name = "open"
-		} else if show {
-			name = "show"
 		}
 		sm.printCommandUsage(name, "[message-id[]")
 		return
@@ -895,22 +896,13 @@ func (sm *SessionManager) downloadCommand(params []string, preview, show bool) {
 		sm.uiHandler.PrintError(errors.New("message not found"))
 		return
 	}
-	if show && msg.Kind != MessageKindImage {
-		sm.uiHandler.PrintError(errors.New("show only works for image messages"))
-		return
-	}
-
-	path, err := sm.downloadMessage(msg, preview)
+	path, err := sm.downloadMessage(msg, open)
 	if err != nil {
 		sm.uiHandler.PrintError(err)
 		return
 	}
-	if show {
-		sm.uiHandler.PrintFile(path)
-		return
-	}
-	if preview {
-		sm.uiHandler.OpenFile(path)
+	if open {
+		sm.uiHandler.OpenFile(path, openCommand(msg.Kind))
 		return
 	}
 	sm.uiHandler.PrintText("[::d] -> " + path + "[::-]")
@@ -931,7 +923,23 @@ func (sm *SessionManager) openMessageURL(params []string) {
 		sm.uiHandler.PrintText("No URL found in message")
 		return
 	}
-	sm.uiHandler.OpenFile(url)
+	sm.uiHandler.OpenFile(url, "")
+}
+
+// openCommand returns the configured command that opens attachments of a kind,
+// or "" for the default app
+func openCommand(kind MessageKind) string {
+	switch kind {
+	case MessageKindImage:
+		return config.Config.General.ImageCommand
+	case MessageKindVideo:
+		return config.Config.General.VideoCommand
+	case MessageKindAudio:
+		return config.Config.General.AudioCommand
+	case MessageKindDocument:
+		return config.Config.General.DocumentCommand
+	}
+	return ""
 }
 
 func (sm *SessionManager) sendMediaCommand(params []string, kind MessageKind) {
@@ -1011,7 +1019,7 @@ func (sm *SessionManager) sendReaction(params []string) {
 		sm.uiHandler.PrintError(fmt.Errorf("failed to send reaction: %v", err))
 		return
 	}
-	if chatID, ok := sm.db.SetReaction(msg.Id, ReactorMe, reaction); ok && chatID == sm.currentReceiver {
+	if chatID, ok := sm.db.SetReaction(msg.Id, ReactorMe, reaction, time.Now().Unix()); ok && chatID == sm.currentReceiver {
 		sm.uiHandler.NewScreen(sm.getMessages(chatID))
 	}
 }
@@ -1045,6 +1053,18 @@ func (sm *SessionManager) namedReactions(msg Message) []string {
 	}
 	sort.Strings(reactions)
 	return reactions
+}
+
+// ShortName returns the short name to show for a user, "You" for yourself.
+func (sm *SessionManager) ShortName(id string) string {
+	if id == ReactorMe {
+		return "You"
+	}
+	if jid, err := types.ParseJID(id); err == nil {
+		_, _, short := sm.contactNames(jid)
+		return short
+	}
+	return id
 }
 
 // reactorID returns the key of a reaction in Message.Reactions
@@ -1428,7 +1448,7 @@ func (eh *eventHandler) handleLiveMessage(evt *events.Message) {
 
 	switch action {
 	case "react":
-		if chatID, ok := eh.sm.db.SetReaction(msg.Id, msg.SenderId, msg.Text); ok && chatID == eh.sm.currentReceiver {
+		if chatID, ok := eh.sm.db.SetReaction(msg.Id, msg.SenderId, msg.Text, int64(msg.Timestamp)); ok && chatID == eh.sm.currentReceiver {
 			eh.sm.uiHandler.NewScreen(eh.sm.getMessages(chatID))
 		}
 		return
@@ -1525,7 +1545,7 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 			}
 			msg, action, ok := eh.normalizeEventMessage(parsed)
 			if ok && action == "react" {
-				eh.sm.db.SetReaction(msg.Id, msg.SenderId, msg.Text)
+				eh.sm.db.SetReaction(msg.Id, msg.SenderId, msg.Text, int64(msg.Timestamp))
 				continue
 			}
 			if !ok || action != "" {
@@ -1536,7 +1556,7 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 			eh.sm.db.AddMessage(msg, false)
 			messageCount++
 			for _, reaction := range webMsg.GetReactions() {
-				eh.sm.db.SetReaction(msg.Id, eh.sm.reactorFromKey(reaction.GetKey(), chatJID), reaction.GetText())
+				eh.sm.db.SetReaction(msg.Id, eh.sm.reactorFromKey(reaction.GetKey(), chatJID), reaction.GetText(), reaction.GetSenderTimestampMS()/1000)
 			}
 		}
 		eh.sm.db.UpdateChatUnread(chatID, int(conv.GetUnreadCount()))
@@ -1590,10 +1610,11 @@ func (eh *eventHandler) normalizeEventMessage(evt *events.Message) (Message, str
 	// a reaction carries the message it reacts to in Id, the emoji in Text and who reacted in SenderId
 	if reaction := evt.Message.GetReactionMessage(); reaction != nil {
 		return Message{
-			Id:       reaction.GetKey().GetID(),
-			ChatId:   eh.sm.chatIdForJID(evt.Info.Chat),
-			Text:     reaction.GetText(),
-			SenderId: eh.sm.reactorID(evt.Info.Sender, evt.Info.IsFromMe),
+			Id:        reaction.GetKey().GetID(),
+			ChatId:    eh.sm.chatIdForJID(evt.Info.Chat),
+			Text:      reaction.GetText(),
+			SenderId:  eh.sm.reactorID(evt.Info.Sender, evt.Info.IsFromMe),
+			Timestamp: uint64(evt.Info.Timestamp.Unix()),
 		}, "react", true
 	}
 

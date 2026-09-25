@@ -744,8 +744,7 @@ func PrintHelp() {
 	fmt.Fprintln(textView, "[-::-]Message panel[-::-]")
 	fmt.Fprintln(textView, "[::b] Up/Down[::-] = select message")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageDownload, "[::-] = Download attachment")
-	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageOpen, "[::-] = Download & open attachment")
-	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageShow, "[::-] = Download & show image using", config.Config.General.ShowCommand)
+	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageOpen, "[::-] or[::b]", config.Config.Keymap.MessageShow, "[::-] = Download & open attachment, with image_command, video_command, audio_command or document_command from the config, or the default app")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageUrl, "[::-] = Find URL in message and open it")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageRevoke, "[::-] = Revoke message")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageReact, "[::-] = React to message, type the emoji after "+config.Config.General.CmdPrefix+"react")
@@ -916,26 +915,49 @@ func PrintErrorMsg(text string, err error) {
 }
 
 // prints an image attachment to the TextView (by message id)
-func PrintImage(path string) {
-	var err error
-	cmdParts := strings.Split(config.Config.General.ShowCommand, " ")
-	cmdParts = append(cmdParts, path)
-	var cmd *exec.Cmd
-	size := len(cmdParts)
-	if size > 1 {
-		cmd = exec.Command(cmdParts[0], cmdParts[1:]...)
-	} else if size > 0 {
-		cmd = exec.Command(cmdParts[0])
+// openWithCommand runs a command with a file added, in the background. What it
+// prints, like an image drawn with text by jp2a, is shown in the message panel.
+func openWithCommand(command string, path string) error {
+	parts := splitCommand(command)
+	cmd := exec.Command(parts[0], append(parts[1:], path)...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
 	}
-	var stdout io.ReadCloser
-	if stdout, err = cmd.StdoutPipe(); err == nil {
-		if err = cmd.Start(); err == nil {
-			reader := bufio.NewReader(stdout)
-			io.Copy(tview.ANSIWriter(textView), reader)
-			return
+	if err = cmd.Start(); err != nil {
+		return err
+	}
+	go func() {
+		io.Copy(tview.ANSIWriter(textView), bufio.NewReader(stdout))
+		cmd.Wait()
+	}()
+	return nil
+}
+
+// splitCommand splits a command into its program and arguments at spaces,
+// except in double quotes, so that paths like "C:\Program Files\..." work
+func splitCommand(command string) []string {
+	var parts []string
+	part := ""
+	quoted, started := false, false
+	for _, r := range command {
+		switch {
+		case r == '"':
+			quoted, started = !quoted, true
+		case r == ' ' && !quoted:
+			if started {
+				parts = append(parts, part)
+			}
+			part, started = "", false
+		default:
+			part += string(r)
+			started = true
 		}
 	}
-	PrintError(err)
+	if started {
+		parts = append(parts, part)
+	}
+	return parts
 }
 
 // updates the status bar
@@ -1033,16 +1055,77 @@ func SetDisplayedChat(wid messages.Chat) {
 
 // get a string representation of all messages for chat
 func getMessagesString(msgs []messages.Message) string {
-	out := ""
-	for idx := range msgs {
-		var prev *messages.Message
-		if idx > 0 && messageSearch == "" {
-			prev = &msgs[idx-1]
-		}
-		out += getTextMessageString(&msgs[idx], prev)
-		out += "\n"
+	// the messages and, unless searching, the reactions to them by when they were given
+	type chatLine struct {
+		msg     *messages.Message
+		reactor string
+		at      int64
 	}
+	lines := make([]chatLine, 0, len(msgs))
+	for idx := range msgs {
+		msg := &msgs[idx]
+		lines = append(lines, chatLine{msg: msg, at: int64(msg.Timestamp)})
+		if messageSearch != "" {
+			continue
+		}
+		reactors := make([]string, 0, len(msg.ReactionTimes))
+		for reactor := range msg.ReactionTimes {
+			if msg.Reactions[reactor] != "" {
+				reactors = append(reactors, reactor)
+			}
+		}
+		sort.Strings(reactors)
+		for _, reactor := range reactors {
+			lines = append(lines, chatLine{msg: msg, reactor: reactor, at: msg.ReactionTimes[reactor]})
+		}
+	}
+	sort.SliceStable(lines, func(i, j int) bool { return lines[i].at < lines[j].at })
+
+	out := ""
+	var prev *messages.Message
+	for idx, line := range lines {
+		if line.reactor != "" {
+			// an empty line before the first of several reactions
+			if idx > 0 && prev != &afterReaction {
+				out += "\n"
+			}
+			out += getReactionString(line.msg, line.reactor, line.at) + "\n"
+			prev = &afterReaction
+			continue
+		}
+		if messageSearch != "" {
+			prev = nil
+		}
+		out += getTextMessageString(line.msg, prev) + "\n"
+		prev = line.msg
+	}
+	endedWithReaction = prev == &afterReaction
 	return out
+}
+
+// afterReaction is the message before a message that follows a reaction line,
+// which starts a new group, see continuesGroup
+var afterReaction = messages.Message{ContactId: "reaction"}
+
+// whether the last line shown in the chat is a reaction
+var endedWithReaction bool
+
+// reactorName returns the name to show for who reacted
+var reactorName = func(reactor string) string {
+	if sessionManager == nil {
+		return reactor
+	}
+	return sessionManager.ShortName(reactor)
+}
+
+// getReactionString returns a dimmed line telling who reacted to a message with what
+func getReactionString(msg *messages.Message, reactor string, at int64) string {
+	text, _, _ := strings.Cut(msg.Text, "\n")
+	if runes := []rune(text); len(runes) > 40 {
+		text = string(runes[:40]) + "…"
+	}
+	return "[::d](" + formatMessageTime(time.Unix(at, 0), time.Now()) + ") " + tview.Escape(reactorName(reactor)) +
+		" reacted " + tview.Escape(msg.Reactions[reactor]) + " to \"" + tview.Escape(text) + "\"[::-]"
 }
 
 // messageGroupGap is how close in time messages of one sender must follow each
@@ -1149,9 +1232,12 @@ func (u UiHandler) NewMessage(msg messages.Message) {
 			return
 		}
 		var prev *messages.Message
-		if len(curRegions) > 0 && messageSearch == "" {
+		if endedWithReaction {
+			prev = &afterReaction
+		} else if len(curRegions) > 0 && messageSearch == "" {
 			prev = &curRegions[len(curRegions)-1]
 		}
+		endedWithReaction = false
 		PrintText(getTextMessageString(&msg, prev))
 		curRegions = append(curRegions, msg)
 	})
@@ -1352,14 +1438,14 @@ func (u UiHandler) PrintText(msg string) {
 	PrintText(msg)
 }
 
-func (u UiHandler) PrintFile(path string) {
-	go app.QueueUpdateDraw(func() {
-		PrintImage(path)
-	})
-}
-
-func (u UiHandler) OpenFile(path string) {
-	open.Run(path)
+func (u UiHandler) OpenFile(target string, command string) {
+	if len(splitCommand(command)) == 0 {
+		open.Run(target)
+		return
+	}
+	if err := openWithCommand(command, target); err != nil {
+		PrintErrorMsg("failed to open "+target+" with "+command+":", err)
+	}
 }
 
 func (u UiHandler) SetStatus(status messages.SessionStatus) {

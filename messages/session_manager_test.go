@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/normen/whatscli/config"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
@@ -50,8 +51,8 @@ func TestReactionInfoListsWhoReacted(t *testing.T) {
 	sm.db.AddContact(Contact{Id: "456@s.whatsapp.net", Name: "Mam"})
 	sm.db.AddMessage(Message{Id: "m1", ChatId: "123@s.whatsapp.net", Timestamp: 100}, false)
 	sm.db.AddMessage(Message{Id: "m2", ChatId: "123@s.whatsapp.net", Timestamp: 200}, false)
-	sm.db.SetReaction("m1", "456@s.whatsapp.net", "👍")
-	sm.db.SetReaction("m1", ReactorMe, "❤️")
+	sm.db.SetReaction("m1", "456@s.whatsapp.net", "👍", 150)
+	sm.db.SetReaction("m1", ReactorMe, "❤️", 150)
 
 	if info := sm.reactionInfo("m1"); info != "\nReactions:\n  ❤️ You\n  👍 Mam" {
 		t.Fatalf("unexpected reaction info %q", info)
@@ -72,5 +73,17 @@ func TestActivityLoggerNotesReceivedData(t *testing.T) {
 	logger.Sub("Recv").Debugf("<iq type=\"result\"/>")
 	if since := time.Since(sm.LastReceived()); since < 0 || since > time.Second {
 		t.Fatalf("expected received data to be noted just now, got %v ago", since)
+	}
+}
+
+func TestOpenCommandPerKind(t *testing.T) {
+	general := config.Config.General
+	defer func() { config.Config.General = general }()
+	config.Config.General.ImageCommand = "feh"
+	config.Config.General.VideoCommand = "mpv"
+	for kind, expected := range map[MessageKind]string{MessageKindImage: "feh", MessageKindVideo: "mpv", MessageKindAudio: "", MessageKindText: ""} {
+		if actual := openCommand(kind); actual != expected {
+			t.Errorf("%s: expected %q, got %q", kind, expected, actual)
+		}
 	}
 }
