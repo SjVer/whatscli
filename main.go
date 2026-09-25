@@ -756,9 +756,33 @@ func UpdateStatusBar(statusInfo messages.SessionStatus) {
 	//infoBar.SetText("🔋: ??%")
 }
 
+// what was typed in the input for each chat, kept while switching chats
+var drafts = map[string]string{}
+
+// switchDraft keeps the text typed for the chat that is left, and returns the
+// text typed earlier for the chat that is opened, which is in the input again
+// and marked as a draft no more
+func switchDraft(from string, to string, typed string) string {
+	draft := drafts[to]
+	delete(drafts, to)
+	if typed == "" {
+		delete(drafts, from)
+	} else {
+		drafts[from] = typed
+	}
+	return draft
+}
+
 // sets the current chat, loads text from storage to TextView
 func SetDisplayedChat(wid messages.Chat) {
 	//TODO: how to get chat to set
+	if wid.Id != currentReceiver.Id {
+		textInput.SetText(switchDraft(currentReceiver.Id, wid.Id, textInput.GetText()))
+		updateChatNode(currentReceiver.Id)
+		updateChatNode(wid.Id)
+		// the message to react to is in the other chat
+		reactTarget = ""
+	}
 	currentReceiver = wid
 	chatMessages = nil
 	messageSearch = ""
@@ -1011,22 +1035,7 @@ func renderChats() {
 		} else if element.Hidden {
 			continue
 		}
-		name := element.Name
-		if name == "" {
-			name = strings.TrimSuffix(strings.TrimSuffix(element.Id, messages.GROUPSUFFIX), messages.CONTACTSUFFIX)
-		}
-		if element.Pinned {
-			name = "📌 " + name
-		}
-		if element.Unread > 0 {
-			name += " ([" + config.Config.Colors.UnreadCount + "]" + fmt.Sprint(element.Unread) + "[-])"
-			//tim := time.Unix(element.LastMessage, 0)
-			//sin := time.Since(tim)
-			//since := fmt.Sprintf("%s", sin)
-			//time := tim.Format("02-01-06 15:04:05")
-			//name += since
-		}
-		node := tview.NewTreeNode(name).
+		node := tview.NewTreeNode(chatNodeText(element)).
 			SetReference(element).
 			SetSelectable(true)
 		if element.IsGroup {
@@ -1041,9 +1050,6 @@ func renderChats() {
 		if element.InArchive && chatSearch == "" {
 			archivedNode.AddChild(node)
 		} else {
-			if element.InArchive {
-				node.SetText(name + " [::d](archived)[::-]")
-			}
 			chatRoot.AddChild(node)
 		}
 		if element.Id == currentReceiver.Id {
@@ -1063,6 +1069,38 @@ func renderChats() {
 	} else {
 		chatRoot.SetText("Chats")
 	}
+}
+
+// chatNodeText returns the text of a chat in the chat list
+func chatNodeText(chat messages.Chat) string {
+	name := chat.Name
+	if name == "" {
+		name = strings.TrimSuffix(strings.TrimSuffix(chat.Id, messages.GROUPSUFFIX), messages.CONTACTSUFFIX)
+	}
+	if chat.Pinned {
+		name = "📌 " + name
+	}
+	if drafts[chat.Id] != "" {
+		name += " ✎"
+	}
+	if chat.Unread > 0 {
+		name += " ([" + config.Config.Colors.UnreadCount + "]" + fmt.Sprint(chat.Unread) + "[-])"
+	}
+	// search results show archived chats among the others
+	if chat.InArchive && chatSearch != "" {
+		name += " [::d](archived)[::-]"
+	}
+	return name
+}
+
+// updateChatNode updates the text of a chat in the chat list, e.g. when its draft changed
+func updateChatNode(chatID string) {
+	chatRoot.Walk(func(node, parent *tview.TreeNode) bool {
+		if chat, ok := node.GetReference().(messages.Chat); ok && chat.Id == chatID {
+			node.SetText(chatNodeText(chat))
+		}
+		return true
+	})
 }
 
 func (u UiHandler) PrintError(err error) {

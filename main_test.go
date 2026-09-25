@@ -106,3 +106,37 @@ func TestReactionSummary(t *testing.T) {
 		t.Fatalf("expected the marked reactions on a line below the message, got %q", lines)
 	}
 }
+
+func TestSwitchDraft(t *testing.T) {
+	drafts = map[string]string{}
+	if text := switchDraft("", "mam", "/search pap"); text != "" {
+		t.Fatalf("expected no draft for a chat that wasn't typed in, got %q", text)
+	}
+	if text := switchDraft("mam", "pap", "half a message"); text != "" {
+		t.Fatalf("expected no draft for pap, got %q", text)
+	}
+	if text := switchDraft("pap", "mam", ""); text != "half a message" {
+		t.Fatalf("expected the draft of mam back, got %q", text)
+	}
+	// the open chat's draft is in the input, and no draft anymore
+	if drafts["mam"] != "" {
+		t.Fatal("expected the draft of the open chat to have moved into the input")
+	}
+	if text := switchDraft("mam", "", ""); text != "/search pap" {
+		t.Fatalf("expected the draft of Chats back, got %q", text)
+	}
+	// a sent or cleared message leaves no draft
+	if _, ok := drafts["mam"]; ok {
+		t.Fatal("expected the draft of mam to be removed after clearing it")
+	}
+}
+
+func TestChatNodeTextMarksDrafts(t *testing.T) {
+	drafts = map[string]string{"mam": "half a message"}
+	if text := chatNodeText(messages.Chat{Id: "mam", Name: "Mam"}); text != "Mam ✎" {
+		t.Fatalf("expected a draft marker, got %q", text)
+	}
+	if text := chatNodeText(messages.Chat{Id: "pap", Name: "Pap"}); text != "Pap" {
+		t.Fatalf("expected no marker without a draft, got %q", text)
+	}
+}
