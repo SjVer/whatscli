@@ -113,16 +113,10 @@ func main() {
 	})
 	textInput.SetDoneFunc(EnterCommand)
 	textInput.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		// word-wise editing, passed on as the keys the input field uses for it
-		if event.Modifiers()&tcell.ModCtrl != 0 {
-			switch event.Key() {
-			case tcell.KeyLeft:
-				return tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt)
-			case tcell.KeyRight:
-				return tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModAlt)
-			case tcell.KeyBackspace, tcell.KeyBackspace2:
-				return tcell.NewEventKey(tcell.KeyCtrlW, 0, tcell.ModCtrl)
-			}
+		// Ctrl+Backspace deletes a word, passed on as the key the input field
+		// uses for it. Ctrl+Left and Ctrl+Right are handled by the input field.
+		if event.Modifiers()&tcell.ModCtrl != 0 && (event.Key() == tcell.KeyBackspace || event.Key() == tcell.KeyBackspace2) {
+			return tcell.NewEventKey(tcell.KeyCtrlW, 0, tcell.ModCtrl)
 		}
 		if event.Key() == tcell.KeyDown {
 			offset, _ := textView.GetScrollOffset()
@@ -160,6 +154,8 @@ func main() {
 	app.SetRoot(gridLayout, true)
 	app.SetAfterDrawFunc(greyOutUnfocusedPanel)
 	app.EnableMouse(true)
+	// pasted text arrives in one piece, so line breaks don't send it line by line
+	app.EnablePaste(true)
 	app.SetFocus(textInput)
 	if err := sessionManager.StartManager(); err != nil {
 		PrintError(err)
@@ -168,11 +164,16 @@ func main() {
 	app.Run()
 }
 
+// colors an entry of the chat list, on the configured background
+func setNodeColor(node *tview.TreeNode, color tcell.Color) *tview.TreeNode {
+	node.SetColor(color)
+	return node.SetTextStyle(node.GetTextStyle().Background(tcell.ColorNames[config.Config.Colors.Background]))
+}
+
 // creates the TreeView for chats
 func MakeTree() *tview.TreeView {
 	rootDir := "Chats"
-	chatRoot = tview.NewTreeNode(rootDir).
-		SetColor(tcell.ColorNames[config.Config.Colors.ListHeader])
+	chatRoot = setNodeColor(tview.NewTreeNode(rootDir), tcell.ColorNames[config.Config.Colors.ListHeader])
 	treeView = tview.NewTreeView().
 		SetRoot(chatRoot).
 		SetCurrentNode(chatRoot)
@@ -487,7 +488,7 @@ func LoadShortcuts() {
 // prints help to chat view
 func PrintHelp() {
 	cmdPrefix := config.Config.General.CmdPrefix
-	fmt.Fprintln(textView, "[-::u]Keys:[-::-]")
+	fmt.Fprintln(textView, "[-::u]Keys:[-::U]")
 	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "Global")
 	fmt.Fprintln(textView, "[::b] Up/Down[::-] = Scroll history/chats")
@@ -513,7 +514,7 @@ func PrintHelp() {
 func PrintCommands() {
 	cmdPrefix := config.Config.General.CmdPrefix
 	fmt.Fprintln(textView, "")
-	fmt.Fprintln(textView, "[-::u]Commands:[-::-]")
+	fmt.Fprintln(textView, "[-::u]Commands:[-::U]")
 	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "[-::-]Global[-::-]")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"connect [::-]or[::b]", config.Config.Keymap.CommandConnect, "[::-] = (Re)Connect to server")
@@ -774,7 +775,7 @@ func getTextMessageString(msg *messages.Message, prev *messages.Message) string 
 	colorMe := config.Config.Colors.ChatMe
 	colorContact := config.Config.Colors.ChatContact
 	out := ""
-	text := highlightSearch(msg.Text, messageSearch)
+	text := formatMarkup(msg.Text, messageSearch)
 	if msg.Forwarded {
 		text = "[" + config.Config.Colors.ForwardedText + "]" + text + "[-]"
 	}
@@ -914,10 +915,9 @@ func (u UiHandler) SetChats(ids []messages.Chat) {
 // archived chats and contacts without messages
 func renderChats() {
 	chatRoot.ClearChildren()
-	archivedNode := tview.NewTreeNode("Archived").
+	archivedNode := setNodeColor(tview.NewTreeNode("Archived"), tcell.ColorNames[config.Config.Colors.ListHeader]).
 		SetReference("archived").
 		SetSelectable(true).
-		SetColor(tcell.ColorNames[config.Config.Colors.ListHeader]).
 		SetExpanded(archivedExpanded)
 	oldId := currentReceiver.Id
 	for _, element := range allChats {
@@ -947,9 +947,9 @@ func renderChats() {
 			SetReference(element).
 			SetSelectable(true)
 		if element.IsGroup {
-			node.SetColor(tcell.ColorNames[config.Config.Colors.ListGroup])
+			setNodeColor(node, tcell.ColorNames[config.Config.Colors.ListGroup])
 		} else {
-			node.SetColor(tcell.ColorNames[config.Config.Colors.ListContact])
+			setNodeColor(node, tcell.ColorNames[config.Config.Colors.ListContact])
 		}
 		// store new currentReceiver, else the selection on the left goes off
 		if element.Id == oldId {
