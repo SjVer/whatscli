@@ -113,6 +113,17 @@ func main() {
 	})
 	textInput.SetDoneFunc(EnterCommand)
 	textInput.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		// word-wise editing, passed on as the keys the input field uses for it
+		if event.Modifiers()&tcell.ModCtrl != 0 {
+			switch event.Key() {
+			case tcell.KeyLeft:
+				return tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt)
+			case tcell.KeyRight:
+				return tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModAlt)
+			case tcell.KeyBackspace, tcell.KeyBackspace2:
+				return tcell.NewEventKey(tcell.KeyCtrlW, 0, tcell.ModCtrl)
+			}
+		}
 		if event.Key() == tcell.KeyDown {
 			offset, _ := textView.GetScrollOffset()
 			offset += 1
