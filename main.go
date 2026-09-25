@@ -111,15 +111,8 @@ func main() {
 
 	PrintHelp()
 
-	textInput = tview.NewTextArea()
-	textInput.SetBackgroundColor(tcell.ColorNames[config.Config.Colors.Background])
-	textInput.SetTextStyle(tcell.StyleDefault.
-		Background(tcell.ColorNames[config.Config.Colors.InputBackground]).
-		Foreground(tcell.ColorNames[config.Config.Colors.InputText]))
-	textInput.SetChangedFunc(func() {
-		sndTxt = textInput.GetText()
-	})
-	textInput.SetInputCapture(handleInputKeys)
+	textInput = newTextInput()
+	loadRecentEmoji()
 
 	gridLayout.AddItem(topBar, 0, 0, 1, 4, 0, 0, false)
 	gridLayout.AddItem(infoBar, 2, 0, 1, 1, 0, 0, false)
@@ -132,7 +125,10 @@ func main() {
 		updateInputHeight(gridLayout)
 		return false
 	})
-	app.SetAfterDrawFunc(greyOutUnfocusedPanel)
+	app.SetAfterDrawFunc(func(screen tcell.Screen) {
+		greyOutUnfocusedPanel(screen)
+		drawEmojiPopup(screen)
+	})
 	app.EnableMouse(true)
 	// pasted text arrives in one piece, so line breaks don't send it line by line
 	app.EnablePaste(true)
@@ -146,8 +142,28 @@ func main() {
 	sessionManager.Close()
 }
 
+// newTextInput creates the input for messages and commands
+func newTextInput() *tview.TextArea {
+	input := tview.NewTextArea()
+	input.SetBackgroundColor(tcell.ColorNames[config.Config.Colors.Background])
+	input.SetTextStyle(tcell.StyleDefault.
+		Background(tcell.ColorNames[config.Config.Colors.InputBackground]).
+		Foreground(tcell.ColorNames[config.Config.Colors.InputText]))
+	input.SetChangedFunc(func() {
+		sndTxt = textInput.GetText()
+		updateEmojiSuggestions()
+	})
+	input.SetMovedFunc(updateEmojiSuggestions)
+	input.SetInputCapture(handleInputKeys)
+	emojiPopup.dismissed = -1
+	return input
+}
+
 // handles keys of the input field before it does
 func handleInputKeys(event *tcell.EventKey) *tcell.EventKey {
+	if handleEmojiPopupKeys(event) {
+		return nil
+	}
 	// word-wise moving and deleting. Ctrl+Left and selecting with Ctrl+Shift
 	// are handled by the input field.
 	if event.Modifiers()&tcell.ModCtrl != 0 {
@@ -225,6 +241,7 @@ var inputLines = 1
 func setInput(text string) {
 	textInput.SetText(text, true)
 	sndTxt = text
+	updateEmojiSuggestions()
 }
 
 // updateInputHeight grows the input to fit its text, up to maxInputLines
@@ -376,6 +393,10 @@ func handleFocusContacts(ev *tcell.EventKey) *tcell.EventKey {
 }
 
 func handleSwitchPanels(ev *tcell.EventKey) *tcell.EventKey {
+	// Tab cycles the emoji suggestions while they are shown
+	if textInput.HasFocus() && handleEmojiPopupKeys(ev) {
+		return nil
+	}
 	ResetMsgSelection()
 	if !textInput.HasFocus() {
 		app.SetFocus(textInput)
@@ -475,7 +496,7 @@ func React(emoji string) {
 		PrintText("select a message first: " + config.Config.Keymap.FocusMessages + " and up/down, then " + config.Config.Keymap.MessageReact)
 		return
 	}
-	sessionManager.CommandChannel <- messages.Command{Name: "react", Params: []string{target, emoji}}
+	sessionManager.CommandChannel <- messages.Command{Name: "react", Params: []string{target, replaceShortcodes(emoji)}}
 	ResetMsgSelection()
 }
 
@@ -774,7 +795,7 @@ func EnterCommand(key tcell.Key) {
 	// no command, send as message
 	msg := messages.Command{
 		Name:   "send",
-		Params: []string{currentReceiver.Id, sndTxt},
+		Params: []string{currentReceiver.Id, replaceShortcodes(sndTxt)},
 	}
 	sessionManager.CommandChannel <- msg
 	setInput("")
