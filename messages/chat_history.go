@@ -57,15 +57,9 @@ func (sm *SessionManager) RequestChatHistory(chatID string) error {
 	if sm.client == nil || !sm.client.IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
-	jid, err := types.ParseJID(chatID)
+	jid, err := sm.phoneChatJID(chatID)
 	if err != nil {
-		return fmt.Errorf("invalid chat: %v", err)
-	}
-	// the phone knows one-to-one chats under their LID
-	if jid.Server == types.DefaultUserServer && sm.client.Store.LIDs != nil {
-		if lid, err := sm.client.Store.LIDs.GetLIDForPN(context.Background(), jid); err == nil && !lid.IsEmpty() {
-			jid = lid
-		}
+		return err
 	}
 	oldest, ok := sm.db.GetOldestMessage(chatID)
 	if !ok {
@@ -118,6 +112,21 @@ func (sm *SessionManager) resetHistoryRequests() {
 	sm.history.loaded = nil
 	sm.history.lock.Unlock()
 	sm.updateActivity()
+}
+
+// phoneChatJID returns the JID the phone knows a chat under: one-to-one chats
+// under their LID, if it is known.
+func (sm *SessionManager) phoneChatJID(chatID string) (types.JID, error) {
+	jid, err := types.ParseJID(chatID)
+	if err != nil {
+		return jid, fmt.Errorf("invalid chat: %v", err)
+	}
+	if jid.Server == types.DefaultUserServer && sm.client != nil && sm.client.Store.LIDs != nil {
+		if lid, err := sm.client.Store.LIDs.GetLIDForPN(context.Background(), jid); err == nil && !lid.IsEmpty() {
+			return lid, nil
+		}
+	}
+	return jid, nil
 }
 
 // historyCount returns how many messages are loaded from the phone at a time,

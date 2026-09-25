@@ -28,6 +28,9 @@ func (sm *SessionManager) Dump(w io.Writer) {
 
 	connected := sm.client != nil && sm.client.IsConnected()
 	fmt.Fprintf(w, "connected: %v\n", connected)
+	if lastReceived := sm.LastReceived(); !lastReceived.IsZero() {
+		fmt.Fprintf(w, "last data received: %s ago\n", time.Since(lastReceived).Round(time.Second))
+	}
 	fmt.Fprintf(w, "keep chats archived: %v\n", sm.db.KeepArchived())
 	fmt.Fprintf(w, "chats: %d shown, %d archived, %d hidden\n", len(shown), len(archived), len(hidden))
 

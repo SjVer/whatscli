@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -46,7 +47,6 @@ type SessionManager struct {
 	client          *whatsmeow.Client
 	container       *sqlstore.Container
 	cacheContainer  *sqlstore.Container
-	BatteryChannel  chan BatteryMsg
 	StatusChannel   chan StatusMsg
 	CommandChannel  chan Command
 	ChatChannel     chan Chat
@@ -79,6 +79,11 @@ type SessionManager struct {
 	history historyRequests
 	// guards statusInfo, which is also changed outside the manager loop
 	statusLock sync.Mutex
+	// when data was last received from WhatsApp, in nanoseconds, see LastReceived
+	lastReceived atomic.Int64
+	// app state collections that were asked from the phone, see recoverAppState
+	recoveryRequested map[appstate.WAPatchName]bool
+	recoveryLock      sync.Mutex
 }
 
 // Init initializes the SessionManager.
@@ -89,7 +94,6 @@ func (sm *SessionManager) Init(handler UiMessageHandler) {
 	if err := sm.db.LoadChats(config.GetSessionFilePath()+".chats.json", historyCount()); err != nil {
 		handler.PrintError(fmt.Errorf("failed to load saved chats: %v", err))
 	}
-	sm.BatteryChannel = make(chan BatteryMsg, 10)
 	sm.StatusChannel = make(chan StatusMsg, 10)
 	sm.CommandChannel = make(chan Command, 10)
 	sm.ChatChannel = make(chan Chat, 10)
@@ -146,14 +150,6 @@ func (sm *SessionManager) runManager() error {
 		select {
 		case command := <-sm.CommandChannel:
 			sm.execCommand(command)
-		case batteryMsg := <-sm.BatteryChannel:
-			sm.statusLock.Lock()
-			sm.statusInfo.BatteryLoading = batteryMsg.loading
-			sm.statusInfo.BatteryPowersave = batteryMsg.powersave
-			sm.statusInfo.BatteryCharge = batteryMsg.charge
-			status := sm.statusInfo
-			sm.statusLock.Unlock()
-			sm.uiHandler.SetStatus(status)
 		case statusMsg := <-sm.StatusChannel:
 			sm.statusLock.Lock()
 			prevStatus := sm.statusInfo.Connected
@@ -214,7 +210,7 @@ func (sm *SessionManager) getConnection() (*whatsmeow.Client, error) {
 		if logger == nil {
 			logger = waLog.Noop
 		}
-		client := whatsmeow.NewClient(deviceStore, logger)
+		client := whatsmeow.NewClient(deviceStore, activityLogger{Logger: logger, received: sm.noteReceived})
 		// needed so loadRecentChats gets chat timestamps from the app state
 		client.EmitAppStateEventsOnFullSync = true
 		client.AddEventHandler(sm.eventHandler.Handle)
@@ -421,7 +417,34 @@ func (sm *SessionManager) hasAppStateKeys() bool {
 func (sm *SessionManager) printAppStateError(err error, name appstate.WAPatchName) {
 	if err != nil && !errors.Is(err, appstate.ErrKeyNotFound) {
 		sm.uiHandler.PrintError(fmt.Errorf("failed to sync %s: %v", name, err))
+		sm.recoverAppState(err, name)
 	}
+}
+
+// recoverAppState asks the phone for a copy of app state that failed to sync
+// because it doesn't add up, a patch on the server whose hash doesn't match.
+// Syncing again doesn't help then, but the phone's copy replaces it, and later
+// patches work again. It is asked once per session and collection.
+func (sm *SessionManager) recoverAppState(err error, name appstate.WAPatchName) bool {
+	if !errors.Is(err, appstate.ErrMismatchingLTHash) && !errors.Is(err, appstate.ErrMismatchingPatchMAC) {
+		return false
+	}
+	sm.recoveryLock.Lock()
+	if sm.recoveryRequested == nil {
+		sm.recoveryRequested = make(map[appstate.WAPatchName]bool)
+	}
+	requested := sm.recoveryRequested[name]
+	sm.recoveryRequested[name] = true
+	sm.recoveryLock.Unlock()
+	if requested {
+		return true
+	}
+	if _, err := sm.client.SendPeerMessage(context.Background(), whatsmeow.BuildAppStateRecoveryRequest(name)); err != nil {
+		sm.uiHandler.PrintError(fmt.Errorf("failed to ask your phone to repair the chat settings: %v", err))
+		return false
+	}
+	sm.uiHandler.PrintText("Asked your phone for a fresh copy of the chat settings, as the synced ones don't add up")
+	return true
 }
 
 // addContactChats loads the contacts, adds a chat for every contact and returns
@@ -624,6 +647,10 @@ func (sm *SessionManager) execCommand(command Command) {
 		}
 	case "read":
 		sm.markCurrentChatRead()
+	case "archive":
+		sm.setCurrentChatArchived(true)
+	case "unarchive":
+		sm.setCurrentChatArchived(false)
 	case "info":
 		if checkParam(command.Params, 1) {
 			sm.uiHandler.PrintText(sm.db.GetMessageInfo(command.Params[0]) + sm.reactionInfo(command.Params[0]))
@@ -708,6 +735,92 @@ func (sm *SessionManager) markCurrentChatRead() {
 	} else if count == 0 {
 		sm.uiHandler.PrintText("No unread messages in current chat")
 	}
+}
+
+// setCurrentChatArchived archives or unarchives the open chat, also on the phone.
+// Like on the phone, archiving unpins the chat, and it stays archived until a
+// newer message arrives, unless "keep chats archived" is enabled.
+func (sm *SessionManager) setCurrentChatArchived(archive bool) {
+	command, state, done := "unarchive", "not archived", "Unarchived"
+	if archive {
+		command, state, done = "archive", "archived", "Archived"
+	}
+	if sm.currentReceiver == "" {
+		sm.printCommandUsage(command, "-> only works in a chat")
+		return
+	}
+	if sm.client == nil || !sm.client.IsConnected() {
+		sm.uiHandler.PrintError(errors.New("not connected to WhatsApp"))
+		return
+	}
+	chatID := sm.currentReceiver
+	for _, chat := range sm.db.GetChatIds() {
+		if chat.Id == chatID && chat.InArchive == archive {
+			sm.uiHandler.PrintText(sm.db.GetIdName(chatID) + " is " + state + " already")
+			return
+		}
+	}
+	target, err := sm.phoneChatJID(chatID)
+	if err != nil {
+		sm.uiHandler.PrintError(err)
+		return
+	}
+
+	// the newest message, until which the chat is archived
+	var lastTime time.Time
+	var lastKey *waCommon.MessageKey
+	if msgs := sm.db.GetMessages(chatID); len(msgs) > 0 {
+		last := msgs[len(msgs)-1]
+		lastTime = time.Unix(int64(last.Timestamp), 0)
+		sender := types.EmptyJID // your own message
+		if !last.FromMe {
+			sender, _ = types.ParseJID(last.SenderId)
+		}
+		lastKey = sm.client.BuildMessageKey(target, sender, types.MessageID(last.Id))
+	}
+	if err = sm.sendAppState(appstate.BuildArchive(target, archive, lastTime, lastKey)); err != nil {
+		sm.uiHandler.PrintError(fmt.Errorf("failed to %s the chat: %v", command, err))
+		return
+	}
+
+	// the phone's change comes back as app state events too, show it right away
+	if archive {
+		archivedAt := lastTime.Unix()
+		for _, chat := range sm.db.GetChatIds() {
+			if chat.Id == chatID {
+				archivedAt = max(archivedAt, chat.LastMessage, chat.LastIncoming)
+			}
+		}
+		sm.db.SetChatArchived(chatID, true, archivedAt)
+		sm.db.SetChatPinned(chatID, false, 0)
+	} else {
+		sm.db.SetChatArchived(chatID, false, 0)
+	}
+	sm.uiHandler.SetChats(sm.db.GetChatIds())
+	sm.uiHandler.PrintText(done + " " + sm.db.GetIdName(chatID))
+}
+
+// sendAppState sends a change of chat settings to the phone. When the phone
+// changed them too and whatsmeow's copy doesn't match anymore, the server
+// refuses the change and whatsmeow can't catch up with the patches it gets
+// back. Syncing everything again, like at startup, fixes that, so the change
+// is sent once more after that.
+func (sm *SessionManager) sendAppState(patch appstate.PatchInfo) error {
+	ctx := context.Background()
+	err := sm.client.SendAppState(ctx, patch)
+	if err == nil {
+		return nil
+	}
+	if sm.Log != nil {
+		sm.Log.Warnf("Sending %s failed, syncing it again and retrying: %v", patch.Type, err)
+	}
+	if syncErr := sm.client.FetchAppState(ctx, patch.Type, true, false); syncErr != nil {
+		if sm.recoverAppState(syncErr, patch.Type) {
+			return errors.New("the chat settings are being repaired by your phone, try again in a moment")
+		}
+		return fmt.Errorf("%v (syncing again failed too: %v)", err, syncErr)
+	}
+	return sm.client.SendAppState(ctx, patch)
 }
 
 // markChatRead marks the unread messages of a chat as read, also on the phone,
@@ -1260,6 +1373,9 @@ func (eh *eventHandler) Handle(evt interface{}) {
 			eh.sm.refreshContactNames()
 		}
 		eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
+		if v.Recovery {
+			eh.sm.uiHandler.PrintText("Chat settings repaired")
+		}
 		if cs := eh.sm.getChatSync(); cs != nil {
 			cs.onAppStateSynced(v.Name)
 		}

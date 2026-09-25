@@ -22,20 +22,10 @@ type UiMessageHandler interface {
 
 // data struct for current session status
 type SessionStatus struct {
-	BatteryCharge    int
-	BatteryLoading   bool
-	BatteryPowersave bool
-	Connected        bool
-	LastSeen         string
+	Connected bool
+	LastSeen  string
 	// what whatscli is waiting for, e.g. messages from the phone
 	Activity string
-}
-
-// message struct for battery messages
-type BatteryMsg struct {
-	charge    int
-	loading   bool
-	powersave bool
 }
 
 // message struct for status messages

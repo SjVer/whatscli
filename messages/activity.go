@@ -1,0 +1,47 @@
+package messages
+
+import (
+	"time"
+
+	waLog "go.mau.fi/whatsmeow/util/log"
+)
+
+// activityLogger passes the log output of whatsmeow on, and notes when it
+// received data from WhatsApp: whatsmeow logs everything it receives to its
+// "Recv" logger, including the answers to the keepalive pings it sends every
+// 20 to 30 seconds, so this shows whether the connection still works.
+type activityLogger struct {
+	waLog.Logger
+	// called for everything logged, only set for the "Recv" logger
+	onReceive func()
+	received  func()
+}
+
+func (l activityLogger) Sub(module string) waLog.Logger {
+	sub := activityLogger{Logger: l.Logger.Sub(module), received: l.received}
+	if module == "Recv" {
+		sub.onReceive = l.received
+	}
+	return sub
+}
+
+func (l activityLogger) Debugf(msg string, args ...any) {
+	if l.onReceive != nil {
+		l.onReceive()
+	}
+	l.Logger.Debugf(msg, args...)
+}
+
+// noteReceived remembers that data was received from WhatsApp just now.
+func (sm *SessionManager) noteReceived() {
+	sm.lastReceived.Store(time.Now().UnixNano())
+}
+
+// LastReceived returns when data was last received from WhatsApp, or the zero
+// time if nothing was received yet.
+func (sm *SessionManager) LastReceived() time.Time {
+	if nanos := sm.lastReceived.Load(); nanos != 0 {
+		return time.Unix(0, nanos)
+	}
+	return time.Time{}
+}

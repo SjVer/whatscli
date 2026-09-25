@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/normen/whatscli/config"
 	"github.com/normen/whatscli/messages"
 	"github.com/rivo/tview"
 )
@@ -237,6 +238,36 @@ func TestCtrlArrowsMoveByWords(t *testing.T) {
 		typeKeys(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModCtrl))
 		if cursor() != expected {
 			t.Fatalf("expected Ctrl+Left to move to %d, got %d", expected, cursor())
+		}
+	}
+}
+
+func TestSyncText(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.Local)
+	if text := syncText(true, time.Time{}, now); text != "" {
+		t.Errorf("expected nothing before anything was received, got %q", text)
+	}
+	if text := syncText(true, now.Add(-12*time.Second), now); text != "[gray]synced just now[-]" {
+		t.Errorf("unexpected text %q", text)
+	}
+	if text := syncText(true, now.Add(-90*time.Second), now); !strings.Contains(text, config.Config.Colors.Negative) || !strings.Contains(text, "1 min ago") {
+		t.Errorf("expected a warning after a minute without data, got %q", text)
+	}
+	if text := syncText(false, now.Add(-90*time.Second), now); !strings.HasPrefix(text, "[gray]") {
+		t.Errorf("expected no warning while offline, which is shown already, got %q", text)
+	}
+	for duration, expected := range map[time.Duration]string{
+		5 * time.Second:  "just now",
+		59 * time.Second: "just now",
+		time.Minute:      "1 min ago",
+		45 * time.Minute: "45 min ago",
+		time.Hour:        "1 hour ago",
+		5 * time.Hour:    "5 hours ago",
+		24 * time.Hour:   "1 day ago",
+		50 * time.Hour:   "2 days ago",
+	} {
+		if actual := timeAgo(duration); actual != expected {
+			t.Errorf("%v: expected %s, got %s", duration, expected, actual)
 		}
 	}
 }

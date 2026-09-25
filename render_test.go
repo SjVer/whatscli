@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -164,5 +165,28 @@ func TestGreyChatListKeepsUnreadCountsColored(t *testing.T) {
 	}
 	if colorOf('M') != tcell.ColorGray || colorOf('C') != tcell.ColorGray {
 		t.Error("expected the chat names and header to be grey")
+	}
+}
+
+func TestEscapeInEmptyInputScrollsToTheNewestMessages(t *testing.T) {
+	textView = tview.NewTextView().SetDynamicColors(true).SetRegions(true)
+	textView.SetRect(0, 0, 20, 3)
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(textView, "line %d\n", i)
+	}
+	textView.ScrollTo(0, 0)
+	textInput = newTextInput()
+	setInput("")
+	messageSearch, chatSearch = "", ""
+
+	EnterCommand(tcell.KeyEsc)
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(20, 3)
+	textView.Draw(screen)
+	if row, _ := textView.GetScrollOffset(); row == 0 {
+		t.Fatal("expected Escape to scroll the chat down to the newest messages")
 	}
 }

@@ -137,6 +137,14 @@ func main() {
 		PrintError(err)
 	}
 	LoadShortcuts()
+	// keeps how long ago the last sync was up to date
+	go func() {
+		for range time.Tick(time.Second) {
+			app.QueueUpdateDraw(func() {
+				UpdateStatusBar(lastStatus)
+			})
+		}
+	}()
 	app.Run()
 	// saves changes of the last second too
 	sessionManager.Close()
@@ -736,6 +744,7 @@ func PrintCommands() {
 	fmt.Fprintln(textView, "[-::-]Chat[-::-]")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"backlog [::-]or[::b]", config.Config.Keymap.CommandBacklog, "[::-] = load next", config.Config.General.BacklogMsgQuantity, "previous messages")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"read [::-]or[::b]", config.Config.Keymap.CommandRead, "[::-] = mark new messages in chat as read")
+	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"archive[::-] / [::b]"+cmdPrefix+"unarchive[::-]  = Archive or unarchive the chat, also on your phone")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"react[::-] emoji  = React to the selected message, without an emoji the reaction is removed")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"search[::-] text  = Search the loaded messages of the chat, or chats and groups when Chats is selected")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"search[::-]  = Show everything again")
@@ -761,12 +770,15 @@ func PrintCommands() {
 // called when text is entered by the user
 func EnterCommand(key tcell.Key) {
 	if key == tcell.KeyEsc {
-		// clear the input first, then the search results
+		// clear the input first, then the search results, then scroll the
+		// chat back down to the newest messages
 		reactTarget = ""
 		if sndTxt != "" {
 			setInput("")
 		} else if messageSearch != "" || chatSearch != "" {
 			Search("")
+		} else {
+			ResetMsgSelection()
 		}
 		return
 	}
@@ -899,6 +911,7 @@ func PrintImage(path string) {
 
 // updates the status bar
 func UpdateStatusBar(statusInfo messages.SessionStatus) {
+	lastStatus = statusInfo
 	out := " "
 	if statusInfo.Connected {
 		out += "[" + config.Config.Colors.Positive + "]online[-]"
@@ -911,23 +924,47 @@ func UpdateStatusBar(statusInfo messages.SessionStatus) {
 		infoBar.SetText(out + "[::d]" + statusInfo.Activity + "[::-]")
 		return
 	}
-	out += "[::d] ("
-	out += fmt.Sprint(statusInfo.BatteryCharge)
-	out += "%"
-	if statusInfo.BatteryLoading {
-		out += " [" + config.Config.Colors.Positive + "]L[-]"
-	} else {
-		out += " [" + config.Config.Colors.Negative + "]l[-]"
-	}
-	if statusInfo.BatteryPowersave {
-		out += " [" + config.Config.Colors.Negative + "]S[-]"
-	} else {
-		out += " [" + config.Config.Colors.Positive + "]s[-]"
-	}
-	out += ")[::-] "
 	out += statusInfo.LastSeen
+	out += syncText(statusInfo.Connected, sessionManager.LastReceived(), time.Now())
 	infoBar.SetText(out)
-	//infoBar.SetText("🔋: ??%")
+}
+
+// the status last shown in the status bar, shown again every second, see syncText
+var lastStatus messages.SessionStatus
+
+// syncText tells how long ago data was last received from WhatsApp. It is red
+// when that was over a minute ago while connected, as the answers to keepalive
+// pings come every 20 to 30 seconds, and the connection seems to be lost.
+func syncText(connected bool, lastReceived time.Time, now time.Time) string {
+	if lastReceived.IsZero() {
+		return ""
+	}
+	since := now.Sub(lastReceived)
+	color := "gray"
+	if connected && since > time.Minute {
+		color = config.Config.Colors.Negative
+	}
+	return "[" + color + "]synced " + timeAgo(since) + "[-]"
+}
+
+// timeAgo returns how long ago something was, like "just now" or "5 min ago"
+func timeAgo(duration time.Duration) string {
+	plural := func(count int, unit string) string {
+		if count == 1 {
+			return fmt.Sprintf("1 %s ago", unit)
+		}
+		return fmt.Sprintf("%d %ss ago", count, unit)
+	}
+	switch {
+	case duration < time.Minute:
+		return "just now"
+	case duration < time.Hour:
+		return fmt.Sprintf("%d min ago", int(duration.Minutes()))
+	case duration < 24*time.Hour:
+		return plural(int(duration.Hours()), "hour")
+	default:
+		return plural(int(duration.Hours()/24), "day")
+	}
 }
 
 // what was typed in the input for each chat, kept while switching chats
