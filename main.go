@@ -11,12 +11,15 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"codeberg.org/tslocum/cbind"
 	"github.com/gdamore/tcell/v2"
 	"github.com/normen/whatscli/config"
 	"github.com/normen/whatscli/messages"
 	"github.com/rivo/tview"
+	"github.com/rivo/uniseg"
 	"github.com/skratchdot/open-golang/open"
 	"github.com/zyedidia/clipboard"
 )
@@ -29,7 +32,7 @@ var curRegions []messages.Message
 
 var textView *tview.TextView
 var treeView *tview.TreeView
-var textInput *tview.InputField
+var textInput *tview.TextArea
 var topBar *tview.TextView
 var infoBar *tview.TextView
 
@@ -108,46 +111,15 @@ func main() {
 
 	PrintHelp()
 
-	textInput = tview.NewInputField()
+	textInput = tview.NewTextArea()
 	textInput.SetBackgroundColor(tcell.ColorNames[config.Config.Colors.Background])
-	textInput.SetFieldBackgroundColor(tcell.ColorNames[config.Config.Colors.InputBackground])
-	textInput.SetFieldTextColor(tcell.ColorNames[config.Config.Colors.InputText])
-	textInput.SetChangedFunc(func(change string) {
-		sndTxt = change
+	textInput.SetTextStyle(tcell.StyleDefault.
+		Background(tcell.ColorNames[config.Config.Colors.InputBackground]).
+		Foreground(tcell.ColorNames[config.Config.Colors.InputText]))
+	textInput.SetChangedFunc(func() {
+		sndTxt = textInput.GetText()
 	})
-	textInput.SetDoneFunc(EnterCommand)
-	textInput.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		// Ctrl+Backspace deletes a word, passed on as the key the input field
-		// uses for it. Ctrl+Left and Ctrl+Right are handled by the input field.
-		if event.Modifiers()&tcell.ModCtrl != 0 && (event.Key() == tcell.KeyBackspace || event.Key() == tcell.KeyBackspace2) {
-			return tcell.NewEventKey(tcell.KeyCtrlW, 0, tcell.ModCtrl)
-		}
-		if event.Key() == tcell.KeyDown {
-			offset, _ := textView.GetScrollOffset()
-			offset += 1
-			textView.ScrollTo(offset, 0)
-			return nil
-		}
-		if event.Key() == tcell.KeyUp {
-			offset, _ := textView.GetScrollOffset()
-			offset -= 1
-			textView.ScrollTo(offset, 0)
-			return nil
-		}
-		if event.Key() == tcell.KeyPgDn {
-			offset, _ := textView.GetScrollOffset()
-			offset += 10
-			textView.ScrollTo(offset, 0)
-			return nil
-		}
-		if event.Key() == tcell.KeyPgUp {
-			offset, _ := textView.GetScrollOffset()
-			offset -= 10
-			textView.ScrollTo(offset, 0)
-			return nil
-		}
-		return event
-	})
+	textInput.SetInputCapture(handleInputKeys)
 
 	gridLayout.AddItem(topBar, 0, 0, 1, 4, 0, 0, false)
 	gridLayout.AddItem(infoBar, 2, 0, 1, 1, 0, 0, false)
@@ -156,6 +128,10 @@ func main() {
 	gridLayout.AddItem(textInput, 2, 1, 1, 3, 0, 0, false)
 
 	app.SetRoot(gridLayout, true)
+	app.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
+		updateInputHeight(gridLayout)
+		return false
+	})
 	app.SetAfterDrawFunc(greyOutUnfocusedPanel)
 	app.EnableMouse(true)
 	// pasted text arrives in one piece, so line breaks don't send it line by line
@@ -168,6 +144,159 @@ func main() {
 	app.Run()
 	// saves changes of the last second too
 	sessionManager.Close()
+}
+
+// handles keys of the input field before it does
+func handleInputKeys(event *tcell.EventKey) *tcell.EventKey {
+	// word-wise moving and deleting. Ctrl+Left and selecting with Ctrl+Shift
+	// are handled by the input field.
+	if event.Modifiers()&tcell.ModCtrl != 0 {
+		switch event.Key() {
+		case tcell.KeyRight:
+			// the input field stops before the last letter of a word instead
+			if event.Modifiers()&tcell.ModShift == 0 {
+				_, _, end := textInput.GetSelection()
+				next := nextWordStart(textInput.GetText(), end)
+				textInput.Select(next, next)
+				return nil
+			}
+		case tcell.KeyBackspace, tcell.KeyBackspace2:
+			return tcell.NewEventKey(tcell.KeyCtrlW, 0, tcell.ModCtrl)
+		case tcell.KeyDelete:
+			// delete until the start of the next word, or the selection
+			if selected, cursor, _ := textInput.GetSelection(); selected == "" {
+				textInput.Replace(cursor, nextWordStart(textInput.GetText(), cursor), "")
+				return nil
+			}
+			return tcell.NewEventKey(tcell.KeyDelete, 0, tcell.ModNone)
+		}
+	}
+	switch event.Key() {
+	case tcell.KeyEnter:
+		// Enter sends, Shift+Enter or Alt+Enter starts a new line
+		if event.Modifiers()&(tcell.ModShift|tcell.ModAlt) != 0 {
+			return tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)
+		}
+		EnterCommand(tcell.KeyEnter)
+		return nil
+	case tcell.KeyEscape:
+		EnterCommand(tcell.KeyEscape)
+		return nil
+	case tcell.KeyUp, tcell.KeyDown:
+		// move between the lines of a longer message, else scroll the messages
+		if inputLines > 1 {
+			return event
+		}
+	}
+	if event.Key() == tcell.KeyDown {
+		offset, _ := textView.GetScrollOffset()
+		offset += 1
+		textView.ScrollTo(offset, 0)
+		return nil
+	}
+	if event.Key() == tcell.KeyUp {
+		offset, _ := textView.GetScrollOffset()
+		offset -= 1
+		textView.ScrollTo(offset, 0)
+		return nil
+	}
+	if event.Key() == tcell.KeyPgDn {
+		offset, _ := textView.GetScrollOffset()
+		offset += 10
+		textView.ScrollTo(offset, 0)
+		return nil
+	}
+	if event.Key() == tcell.KeyPgUp {
+		offset, _ := textView.GetScrollOffset()
+		offset -= 10
+		textView.ScrollTo(offset, 0)
+		return nil
+	}
+	return event
+}
+
+// maxInputLines is how high the input grows for longer messages
+const maxInputLines = 8
+
+// inputLines is the current height of the input
+var inputLines = 1
+
+// setInput sets the text of the input, with the cursor at the end
+func setInput(text string) {
+	textInput.SetText(text, true)
+	sndTxt = text
+}
+
+// updateInputHeight grows the input to fit its text, up to maxInputLines
+func updateInputHeight(grid *tview.Grid) {
+	_, _, width, _ := textInput.GetInnerRect()
+	needed := wrappedLineCount(textInput.GetText(), width)
+	lines := min(needed, maxInputLines)
+	if lines != inputLines {
+		inputLines = lines
+		grid.SetRows(1, 0, lines)
+	}
+	// Before it grew, the input scrolled down to the cursor on the new line.
+	// Scroll back up when all lines fit, so that none of them is hidden.
+	if row, column := textInput.GetOffset(); needed <= maxInputLines && row != 0 {
+		textInput.SetOffset(0, column)
+	}
+}
+
+// nextWordStart returns where the word after the one at pos starts in text,
+// skipping the rest of the word at pos and the spaces after it
+func nextWordStart(text string, pos int) int {
+	for pos < len(text) {
+		r, size := utf8.DecodeRuneInString(text[pos:])
+		if unicode.IsSpace(r) {
+			break
+		}
+		pos += size
+	}
+	for pos < len(text) {
+		r, size := utf8.DecodeRuneInString(text[pos:])
+		if !unicode.IsSpace(r) {
+			break
+		}
+		pos += size
+	}
+	return pos
+}
+
+// wordPattern matches a word with the spaces after it
+var wordPattern = regexp.MustCompile(`\S*\s*`)
+
+// wrappedLineCount returns on how many lines text is shown when wrapped at
+// words to width, like the input does
+func wrappedLineCount(text string, width int) int {
+	if width <= 0 {
+		return 1
+	}
+	lines := 0
+	for _, paragraph := range strings.Split(text, "\n") {
+		lines++
+		lineWidth := 0
+		for _, word := range wordPattern.FindAllString(paragraph, -1) {
+			trimmed := strings.TrimRight(word, " ")
+			wordWidth := uniseg.StringWidth(trimmed)
+			if lineWidth > 0 && lineWidth+wordWidth > width {
+				lines++
+				lineWidth = 0
+			}
+			// words longer than a line are broken up
+			for wordWidth > width {
+				lines++
+				wordWidth -= width
+			}
+			// spaces don't go past the end of a line, but continue on the next
+			lineWidth += wordWidth + len(word) - len(trimmed)
+			for lineWidth > width {
+				lines++
+				lineWidth -= width
+			}
+		}
+	}
+	return lines
 }
 
 // colors an entry of the chat list, on the configured background
@@ -281,7 +410,7 @@ func handleCopyUser(ev *tcell.EventKey) *tcell.EventKey {
 
 func handlePasteUser(ev *tcell.EventKey) *tcell.EventKey {
 	if clip, err := safeReadClipboard(); err == nil {
-		textInput.SetText(textInput.GetText() + " " + clip)
+		setInput(textInput.GetText() + " " + clip)
 	} else {
 		PrintError(err)
 	}
@@ -327,7 +456,7 @@ func handleMessageReact(ev *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 	reactTarget = hls[0]
-	textInput.SetText(config.Config.General.CmdPrefix + "react ")
+	setInput(config.Config.General.CmdPrefix + "react ")
 	app.SetFocus(textInput)
 	return nil
 }
@@ -590,7 +719,7 @@ func EnterCommand(key tcell.Key) {
 		// clear the input first, then the search results
 		reactTarget = ""
 		if sndTxt != "" {
-			textInput.SetText("")
+			setInput("")
 		} else if messageSearch != "" || chatSearch != "" {
 			Search("")
 		}
@@ -602,22 +731,22 @@ func EnterCommand(key tcell.Key) {
 	cmdPrefix := config.Config.General.CmdPrefix
 	if sndTxt == cmdPrefix+"help" {
 		PrintHelp()
-		textInput.SetText("")
+		setInput("")
 		return
 	}
 	if sndTxt == cmdPrefix+"commands" {
 		PrintCommands()
-		textInput.SetText("")
+		setInput("")
 		return
 	}
 	if sndTxt == cmdPrefix+"react" || strings.HasPrefix(sndTxt, cmdPrefix+"react ") {
 		React(strings.TrimSpace(strings.TrimPrefix(sndTxt, cmdPrefix+"react")))
-		textInput.SetText("")
+		setInput("")
 		return
 	}
 	if sndTxt == cmdPrefix+"search" || strings.HasPrefix(sndTxt, cmdPrefix+"search ") {
 		Search(strings.TrimSpace(strings.TrimPrefix(sndTxt, cmdPrefix+"search")))
-		textInput.SetText("")
+		setInput("")
 		return
 	}
 	if sndTxt == cmdPrefix+"quit" {
@@ -634,12 +763,12 @@ func EnterCommand(key tcell.Key) {
 			params = cmdParts[1:]
 		}
 		sessionManager.CommandChannel <- messages.Command{cmd, params}
-		textInput.SetText("")
+		setInput("")
 		return
 	}
 	if currentReceiver.Id == "" {
 		PrintText("no receiver")
-		textInput.SetText("")
+		setInput("")
 		return
 	}
 	// no command, send as message
@@ -648,7 +777,7 @@ func EnterCommand(key tcell.Key) {
 		Params: []string{currentReceiver.Id, sndTxt},
 	}
 	sessionManager.CommandChannel <- msg
-	textInput.SetText("")
+	setInput("")
 }
 
 // get the next message id to select (highlighted + offset)
@@ -777,7 +906,7 @@ func switchDraft(from string, to string, typed string) string {
 func SetDisplayedChat(wid messages.Chat) {
 	//TODO: how to get chat to set
 	if wid.Id != currentReceiver.Id {
-		textInput.SetText(switchDraft(currentReceiver.Id, wid.Id, textInput.GetText()))
+		setInput(switchDraft(currentReceiver.Id, wid.Id, textInput.GetText()))
 		updateChatNode(currentReceiver.Id)
 		updateChatNode(wid.Id)
 		// the message to react to is in the other chat

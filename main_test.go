@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/normen/whatscli/messages"
+	"github.com/rivo/tview"
 )
 
 func TestContinuesGroup(t *testing.T) {
@@ -138,5 +140,103 @@ func TestChatNodeTextMarksDrafts(t *testing.T) {
 	}
 	if text := chatNodeText(messages.Chat{Id: "pap", Name: "Pap"}); text != "Pap" {
 		t.Fatalf("expected no marker without a draft, got %q", text)
+	}
+}
+
+func TestShiftEnterStartsANewLine(t *testing.T) {
+	textInput = tview.NewTextArea()
+	textInput.SetInputCapture(handleInputKeys)
+	setInput("one")
+	typeKeys(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModShift), tcell.NewEventKey(tcell.KeyRune, 't', tcell.ModNone))
+	if text := textInput.GetText(); text != "one\nt" {
+		t.Fatalf("expected a new line, got %q", text)
+	}
+}
+
+func TestWrappedLineCount(t *testing.T) {
+	tests := []struct {
+		text     string
+		width    int
+		expected int
+	}{
+		{"", 10, 1},
+		{"short", 10, 1},
+		{"exactly 10", 10, 1},
+		{"one two three", 10, 2},
+		{"one two three four five", 10, 3},
+		{"one\ntwo", 10, 2},
+		{"abcdefghijklmnopqrstuvwxyz", 10, 3},
+		{"😭😭😭😭😭😭", 10, 2}, // emoji are two columns wide
+	}
+	for _, test := range tests {
+		if actual := wrappedLineCount(test.text, test.width); actual != test.expected {
+			t.Errorf("%q at width %d: expected %d lines, got %d", test.text, test.width, test.expected, actual)
+		}
+	}
+}
+
+// typeKeys sends keys to the input field, through its key handling
+func typeKeys(keys ...*tcell.EventKey) {
+	for _, key := range keys {
+		textInput.InputHandler()(key, func(tview.Primitive) {})
+	}
+}
+
+func TestWordDeletingKeys(t *testing.T) {
+	textInput = tview.NewTextArea()
+	textInput.SetInputCapture(handleInputKeys)
+	left := tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone)
+
+	setInput("one two three")
+	typeKeys(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModCtrl))
+	if text := textInput.GetText(); text != "one two " {
+		t.Errorf("expected Ctrl+Backspace to delete the word before the cursor, got %q", text)
+	}
+
+	setInput("one two three")
+	for range "two three" {
+		typeKeys(left)
+	}
+	typeKeys(tcell.NewEventKey(tcell.KeyDelete, 0, tcell.ModCtrl))
+	if text := textInput.GetText(); text != "one three" {
+		t.Errorf("expected Ctrl+Delete to delete until the next word, got %q", text)
+	}
+	// the cursor stays where it was, typing continues there
+	typeKeys(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+	if text := textInput.GetText(); text != "one xthree" {
+		t.Errorf("expected the cursor to stay before the next word, got %q", text)
+	}
+}
+
+func TestNextWordStart(t *testing.T) {
+	text := "one two  three 😭 end"
+	for pos, expected := range map[int]int{0: 4, 1: 4, 3: 4, 4: 9, 7: 9, 9: 15, 15: 20, 20: len(text)} {
+		if actual := nextWordStart(text, pos); actual != expected {
+			t.Errorf("from %d in %q: expected %d, got %d", pos, text, expected, actual)
+		}
+	}
+}
+
+func TestCtrlArrowsMoveByWords(t *testing.T) {
+	textInput = tview.NewTextArea()
+	textInput.SetInputCapture(handleInputKeys)
+	setInput("one two three")
+	typeKeys(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone))
+
+	cursor := func() int {
+		_, pos, _ := textInput.GetSelection()
+		return pos
+	}
+	for _, expected := range []int{4, 8, 13, 13} {
+		typeKeys(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl))
+		if cursor() != expected {
+			t.Fatalf("expected Ctrl+Right to move to %d, got %d", expected, cursor())
+		}
+	}
+	for _, expected := range []int{8, 4, 0, 0} {
+		typeKeys(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModCtrl))
+		if cursor() != expected {
+			t.Fatalf("expected Ctrl+Left to move to %d, got %d", expected, cursor())
+		}
 	}
 }

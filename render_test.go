@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -55,5 +56,78 @@ func TestChatListEntriesUseConfiguredBackground(t *testing.T) {
 	fg, bg, _ := node.GetTextStyle().Decompose()
 	if fg != tcell.ColorGreen || bg != tcell.ColorNames[config.Config.Colors.Background] {
 		t.Errorf("expected green on the configured background, got %v on %v", fg, bg)
+	}
+}
+
+func TestWrappedLineCountMatchesTheInput(t *testing.T) {
+	texts := []string{
+		"short",
+		"one two three four five six seven eight nine ten",
+		"a message with some longer words like international and communication",
+		"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz",
+		"line one\nline two is a bit longer than the others\n\nline four",
+		"emoji 😭😭😭 in 😭 a 😭😭 line with words",
+		"trailing spaces at the end of a line      then more",
+	}
+	for _, width := range []int{10, 17, 30} {
+		for _, text := range texts {
+			screen := tcell.NewSimulationScreen("")
+			if err := screen.Init(); err != nil {
+				t.Fatal(err)
+			}
+			screen.SetSize(width, 30)
+			input := tview.NewTextArea()
+			input.SetText(text, false)
+			input.SetRect(0, 0, width, 30)
+			input.Draw(screen)
+			// the last row with text is how many lines it takes
+			drawn := 0
+			for y := 0; y < 30; y++ {
+				for x := 0; x < width; x++ {
+					if r, _, _, _ := screen.GetContent(x, y); r != ' ' && r != 0 {
+						drawn = y + 1
+					}
+				}
+			}
+			// empty lines at the end aren't drawn, but count
+			if strings.HasSuffix(text, "\n") {
+				continue
+			}
+			if counted := wrappedLineCount(text, width); counted != drawn {
+				t.Errorf("width %d, %q: counted %d lines, the input draws %d", width, text, counted, drawn)
+			}
+		}
+	}
+}
+
+func TestGrownInputShowsAllLines(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(12, 8)
+	textInput = tview.NewTextArea()
+	grid := tview.NewGrid().SetRows(1, 0, 1)
+	grid.AddItem(textInput, 2, 0, 1, 1, 0, 0, true)
+	grid.SetRect(0, 0, 12, 8)
+	inputLines = 1
+
+	// typing until the text wraps, while the input is one line high
+	grid.Draw(screen)
+	setInput("first line second")
+	grid.Draw(screen)
+	updateInputHeight(grid)
+	grid.Draw(screen)
+
+	row := func(y int) string {
+		text := ""
+		for x := 0; x < 12; x++ {
+			r, _, _, _ := screen.GetContent(x, y)
+			text += string(r)
+		}
+		return strings.TrimSpace(text)
+	}
+	if inputLines != 2 || row(6) != "first line" || row(7) != "second" {
+		t.Fatalf("expected both lines at the bottom, got %d lines: %q, %q", inputLines, row(6), row(7))
 	}
 }
