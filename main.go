@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	_ "embed"
 	"flag"
 	"fmt"
 	"io"
@@ -23,6 +24,11 @@ import (
 	"github.com/skratchdot/open-golang/open"
 	"github.com/zyedidia/clipboard"
 )
+
+// the icon of whatscli on notifications
+//
+//go:embed icon.png
+var notificationIcon []byte
 
 var VERSION string = "v1.1.6"
 
@@ -65,6 +71,7 @@ func main() {
 	flag.Parse()
 
 	config.InitConfig()
+	messages.NotificationIcon = notificationIcon
 	logger, err := openLog(*logPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

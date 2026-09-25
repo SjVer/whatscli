@@ -55,7 +55,7 @@ func TestHelpHeaderUnderlineEnds(t *testing.T) {
 }
 
 func TestChatListEntriesUseConfiguredBackground(t *testing.T) {
-	node := setNodeColor(tview.NewTreeNode("Mam"), tcell.ColorGreen)
+	node := setNodeColor(tview.NewTreeNode("Alice"), tcell.ColorGreen)
 	fg, bg, _ := node.GetTextStyle().Decompose()
 	if fg != tcell.ColorGreen || bg != tcell.ColorNames[config.Config.Colors.Background] {
 		t.Errorf("expected green on the configured background, got %v on %v", fg, bg)
@@ -142,7 +142,7 @@ func TestGreyChatListKeepsUnreadCountsColored(t *testing.T) {
 	}
 	screen.SetSize(30, 4)
 	root := setNodeColor(tview.NewTreeNode("Chats"), tcell.ColorNames[config.Config.Colors.ListHeader])
-	root.AddChild(setNodeColor(tview.NewTreeNode(chatNodeText(messages.Chat{Id: "mam", Name: "Mam", Unread: 3})), tcell.ColorGreen))
+	root.AddChild(setNodeColor(tview.NewTreeNode(chatNodeText(messages.Chat{Id: "alice", Name: "Alice", Unread: 3})), tcell.ColorGreen))
 	treeView = tview.NewTreeView().SetRoot(root).SetCurrentNode(root)
 	treeView.SetRect(0, 0, 30, 4)
 	textView = tview.NewTextView()
@@ -165,7 +165,7 @@ func TestGreyChatListKeepsUnreadCountsColored(t *testing.T) {
 	if colorOf('3') != tcell.ColorNames[config.Config.Colors.UnreadCount] {
 		t.Error("expected the unread count to keep its color")
 	}
-	if colorOf('M') != tcell.ColorGray || colorOf('C') != tcell.ColorGray {
+	if colorOf('A') != tcell.ColorGray || colorOf('C') != tcell.ColorGray {
 		t.Error("expected the chat names and header to be grey")
 	}
 }

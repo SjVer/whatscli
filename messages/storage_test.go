@@ -172,14 +172,14 @@ func TestSetChatUnarchivedOverridesOlderArchiveRecords(t *testing.T) {
 	db.Init()
 
 	// the phone lists the chat as not archived, for a message whatscli couldn't parse
-	db.SetChatArchived("pap@s.whatsapp.net", true, 100)
-	db.SetChatUnarchived("pap@s.whatsapp.net", 200)
+	db.SetChatArchived("bob@s.whatsapp.net", true, 100)
+	db.SetChatUnarchived("bob@s.whatsapp.net", 200)
 	// archive records synced later at startup don't archive it again
-	db.SetChatArchived("pap@s.whatsapp.net", true, 100)
-	db.UpdateChatLastMessage("pap@s.whatsapp.net", 200)
+	db.SetChatArchived("bob@s.whatsapp.net", true, 100)
+	db.UpdateChatLastMessage("bob@s.whatsapp.net", 200)
 
 	for _, chat := range db.GetChatIds() {
-		if chat.Id == "pap@s.whatsapp.net" && chat.InArchive {
+		if chat.Id == "bob@s.whatsapp.net" && chat.InArchive {
 			t.Fatal("expected chat that the phone lists as not archived to stay unarchived")
 		}
 	}
@@ -293,13 +293,13 @@ func TestUpdateContactNamesLooksUpEachSenderOnce(t *testing.T) {
 	lookups := 0
 	db.UpdateContactNames(func(contactID string) (string, string, string, bool) {
 		lookups++
-		return "123@s.whatsapp.net", "Mam Full", "Mam", true
+		return "123@s.whatsapp.net", "Alice Smith", "Alice", true
 	})
 	if lookups != 1 {
 		t.Fatalf("expected one lookup for the sender of both messages, got %d", lookups)
 	}
 	for _, msg := range db.GetMessages("group@g.us") {
-		if msg.ContactId != "123@s.whatsapp.net" || msg.ContactName != "Mam Full" || msg.ContactShort != "Mam" {
+		if msg.ContactId != "123@s.whatsapp.net" || msg.ContactName != "Alice Smith" || msg.ContactShort != "Alice" {
 			t.Fatalf("expected the names to be updated, got %+v", msg)
 		}
 	}

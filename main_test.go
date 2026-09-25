@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"image/png"
 	"strings"
 	"testing"
 	"time"
@@ -12,16 +14,16 @@ import (
 )
 
 func TestContinuesGroup(t *testing.T) {
-	first := messages.Message{Id: "1", ContactId: "mam", ContactShort: "Mam", Timestamp: 1000}
+	first := messages.Message{Id: "1", ContactId: "alice", ContactShort: "Alice", Timestamp: 1000}
 	tests := []struct {
 		name     string
 		msg      messages.Message
 		expected bool
 	}{
-		{"same sender within 2 minutes", messages.Message{ContactId: "mam", Timestamp: 1120}, true},
-		{"same sender after more than 2 minutes", messages.Message{ContactId: "mam", Timestamp: 1121}, false},
-		{"other sender", messages.Message{ContactId: "pap", Timestamp: 1010}, false},
-		{"sent by me", messages.Message{ContactId: "mam", FromMe: true, Timestamp: 1010}, false},
+		{"same sender within 2 minutes", messages.Message{ContactId: "alice", Timestamp: 1120}, true},
+		{"same sender after more than 2 minutes", messages.Message{ContactId: "alice", Timestamp: 1121}, false},
+		{"other sender", messages.Message{ContactId: "bob", Timestamp: 1010}, false},
+		{"sent by me", messages.Message{ContactId: "alice", FromMe: true, Timestamp: 1010}, false},
 	}
 	for _, test := range tests {
 		if actual := continuesGroup(&first, &test.msg); actual != test.expected {
@@ -34,11 +36,11 @@ func TestContinuesGroup(t *testing.T) {
 }
 
 func TestGroupedMessagesAreShownBelowOneHeader(t *testing.T) {
-	first := messages.Message{Id: "1", ContactId: "mam", ContactShort: "Mam", Timestamp: 1000, Text: "hello"}
-	next := messages.Message{Id: "2", ContactId: "mam", ContactShort: "Mam", Timestamp: 1060, Text: "again"}
+	first := messages.Message{Id: "1", ContactId: "alice", ContactShort: "Alice", Timestamp: 1000, Text: "hello"}
+	next := messages.Message{Id: "2", ContactId: "alice", ContactShort: "Alice", Timestamp: 1060, Text: "again"}
 
 	firstLines := strings.Split(getTextMessageString(&first, nil), "\n")
-	if len(firstLines) != 2 || !strings.Contains(firstLines[0], "Mam") || !strings.HasSuffix(firstLines[1], `hello[""]`) {
+	if len(firstLines) != 2 || !strings.Contains(firstLines[0], "Alice") || !strings.HasSuffix(firstLines[1], `hello[""]`) {
 		t.Fatalf("expected the time and name on their own line above the text, got %q", firstLines)
 	}
 	nextLine := getTextMessageString(&next, &first)
@@ -46,9 +48,9 @@ func TestGroupedMessagesAreShownBelowOneHeader(t *testing.T) {
 		t.Fatalf("expected only the text of a grouped message, without indentation, got %q", nextLine)
 	}
 
-	later := messages.Message{Id: "3", ContactId: "mam", ContactShort: "Mam", Timestamp: 2000, Text: "later"}
+	later := messages.Message{Id: "3", ContactId: "alice", ContactShort: "Alice", Timestamp: 2000, Text: "later"}
 	laterLines := strings.Split(getTextMessageString(&later, &next), "\n")
-	if len(laterLines) != 3 || laterLines[0] != `["3"]` || !strings.Contains(laterLines[1], "Mam") {
+	if len(laterLines) != 3 || laterLines[0] != `["3"]` || !strings.Contains(laterLines[1], "Alice") {
 		t.Fatalf("expected an empty line before the header of a new group, got %q", laterLines)
 	}
 }
@@ -73,8 +75,8 @@ func TestFormatMessageTime(t *testing.T) {
 }
 
 func TestSearchMatching(t *testing.T) {
-	chat := messages.Chat{Id: "31612345678@s.whatsapp.net", Name: "Anna :)"}
-	for search, expected := range map[string]bool{"roos": true, "ROOS": true, "3161234": true, "pap": false} {
+	chat := messages.Chat{Id: "31612345678@s.whatsapp.net", Name: "Carol :)"}
+	for search, expected := range map[string]bool{"carol": true, "CAROL": true, "3161234": true, "bob": false} {
 		if chatMatches(chat, search) != expected {
 			t.Errorf("chat search %q: expected %v", search, expected)
 		}
@@ -102,7 +104,7 @@ func TestReactionSummary(t *testing.T) {
 	if reactionSummary(nil) != "" {
 		t.Fatal("expected no summary without reactions")
 	}
-	msg := messages.Message{Id: "1", ContactId: "mam", ContactShort: "Mam", Timestamp: 1000, Text: "hi",
+	msg := messages.Message{Id: "1", ContactId: "alice", ContactShort: "Alice", Timestamp: 1000, Text: "hi",
 		Reactions: map[string]string{"me": "👍"}}
 	lines := strings.Split(getTextMessageString(&msg, nil), "\n")
 	if len(lines) != 3 || !strings.Contains(lines[2], "↳") || !strings.Contains(lines[2], "👍") {
@@ -112,34 +114,34 @@ func TestReactionSummary(t *testing.T) {
 
 func TestSwitchDraft(t *testing.T) {
 	drafts = map[string]string{}
-	if text := switchDraft("", "mam", "/search pap"); text != "" {
+	if text := switchDraft("", "alice", "/search bob"); text != "" {
 		t.Fatalf("expected no draft for a chat that wasn't typed in, got %q", text)
 	}
-	if text := switchDraft("mam", "pap", "half a message"); text != "" {
-		t.Fatalf("expected no draft for pap, got %q", text)
+	if text := switchDraft("alice", "bob", "half a message"); text != "" {
+		t.Fatalf("expected no draft for bob, got %q", text)
 	}
-	if text := switchDraft("pap", "mam", ""); text != "half a message" {
-		t.Fatalf("expected the draft of mam back, got %q", text)
+	if text := switchDraft("bob", "alice", ""); text != "half a message" {
+		t.Fatalf("expected the draft of alice back, got %q", text)
 	}
 	// the open chat's draft is in the input, and no draft anymore
-	if drafts["mam"] != "" {
+	if drafts["alice"] != "" {
 		t.Fatal("expected the draft of the open chat to have moved into the input")
 	}
-	if text := switchDraft("mam", "", ""); text != "/search pap" {
+	if text := switchDraft("alice", "", ""); text != "/search bob" {
 		t.Fatalf("expected the draft of Chats back, got %q", text)
 	}
 	// a sent or cleared message leaves no draft
-	if _, ok := drafts["mam"]; ok {
-		t.Fatal("expected the draft of mam to be removed after clearing it")
+	if _, ok := drafts["alice"]; ok {
+		t.Fatal("expected the draft of alice to be removed after clearing it")
 	}
 }
 
 func TestChatNodeTextMarksDrafts(t *testing.T) {
-	drafts = map[string]string{"mam": "half a message"}
-	if text := chatNodeText(messages.Chat{Id: "mam", Name: "Mam"}); text != "Mam ✎" {
+	drafts = map[string]string{"alice": "half a message"}
+	if text := chatNodeText(messages.Chat{Id: "alice", Name: "Alice"}); text != "Alice ✎" {
 		t.Fatalf("expected a draft marker, got %q", text)
 	}
-	if text := chatNodeText(messages.Chat{Id: "pap", Name: "Pap"}); text != "Pap" {
+	if text := chatNodeText(messages.Chat{Id: "bob", Name: "Bob"}); text != "Bob" {
 		t.Fatalf("expected no marker without a draft, got %q", text)
 	}
 }
@@ -283,7 +285,7 @@ func TestCommandsAreColored(t *testing.T) {
 	inputColor := tcell.ColorNames[config.Config.Colors.InputText]
 
 	for text, expected := range map[string]tcell.Color{
-		"/search mam":         silentColor,
+		"/search alice":       silentColor,
 		"/archive":            silentColor,
 		"/unknown":            silentColor,
 		"hello":               inputColor,
@@ -305,16 +307,16 @@ func TestCommandsAreColored(t *testing.T) {
 }
 
 func TestReactionLinesInTheChat(t *testing.T) {
-	reactorName = func(reactor string) string { return map[string]string{"pap": "Pap", "me": "You"}[reactor] }
+	reactorName = func(reactor string) string { return map[string]string{"bob": "Bob", "me": "You"}[reactor] }
 	messageSearch = ""
 	msgs := []messages.Message{
-		{Id: "1", ContactId: "mam", ContactShort: "Mam", Timestamp: 1000, Text: "are you coming tonight?",
-			Reactions: map[string]string{"pap": "👍"}, ReactionTimes: map[string]int64{"pap": 1100}},
-		{Id: "2", ContactId: "mam", ContactShort: "Mam", Timestamp: 1200, Text: "never mind"},
+		{Id: "1", ContactId: "alice", ContactShort: "Alice", Timestamp: 1000, Text: "are you coming tonight?",
+			Reactions: map[string]string{"bob": "👍"}, ReactionTimes: map[string]int64{"bob": 1100}},
+		{Id: "2", ContactId: "alice", ContactShort: "Alice", Timestamp: 1200, Text: "never mind"},
 	}
 	out := getMessagesString(msgs)
 	first := strings.Index(out, "are you coming")
-	reaction := strings.Index(out, `Pap reacted 👍 to "are you coming tonight?"`)
+	reaction := strings.Index(out, `Bob reacted 👍 to "are you coming tonight?"`)
 	second := strings.Index(out, "never mind")
 	if first < 0 || reaction < first || second < reaction {
 		t.Fatalf("expected the reaction line between the messages, got %q", out)
@@ -323,7 +325,7 @@ func TestReactionLinesInTheChat(t *testing.T) {
 		t.Fatalf("expected the reaction line to be dimmed, got %q", out)
 	}
 	// the message after the reaction starts a new group, with a header
-	if strings.Count(out, "Mam:") != 2 {
+	if strings.Count(out, "Alice:") != 2 {
 		t.Fatalf("expected a new group after the reaction, got %q", out)
 	}
 	// the reaction is still shown under the message
@@ -350,5 +352,15 @@ func TestSplitCommand(t *testing.T) {
 		if strings.Join(actual, "|") != strings.Join(expected, "|") || len(actual) != len(expected) {
 			t.Errorf("%q: expected %q, got %q", command, expected, actual)
 		}
+	}
+}
+
+func TestNotificationIconIsAPNG(t *testing.T) {
+	icon, err := png.Decode(bytes.NewReader(notificationIcon))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if icon.Bounds().Dx() == 0 {
+		t.Fatal("expected an icon")
 	}
 }

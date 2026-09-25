@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/gen2brain/beeep"
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
 	"github.com/normen/whatscli/config"
 	"github.com/normen/whatscli/qrcode"
@@ -81,6 +80,10 @@ type SessionManager struct {
 	statusLock sync.Mutex
 	// when data was last received from WhatsApp, in nanoseconds, see LastReceived
 	lastReceived atomic.Int64
+	// notifies when the connection is lost
+	connection connectionWatch
+	// pictures of chats shown on notifications
+	pictures chatPictures
 	// app state collections that were asked from the phone, see recoverAppState
 	recoveryRequested map[appstate.WAPatchName]bool
 	recoveryLock      sync.Mutex
@@ -1364,14 +1367,25 @@ func (sm *SessionManager) outgoingMessageFromSendResponse(resp whatsmeow.SendRes
 	}
 }
 
-func notify(title, message string) error {
+// notificationText returns the title and text of the notification for a new
+// message: messages in groups are titled with the group and name the sender
+func notificationText(msg Message, chatName string) (string, string) {
+	if strings.Contains(msg.ChatId, GROUPSUFFIX) {
+		return chatName, msg.ContactShort + ": " + msg.Text
+	}
+	return msg.ContactShort, msg.Text
+}
+
+// notify shows a desktop notification with an icon, the app's if empty, see
+// desktopNotify, or rings the terminal bell
+func notify(title, message, icon string) error {
 	if !config.Config.General.EnableNotifications {
 		return nil
 	} else if config.Config.General.UseTerminalBell {
 		_, err := fmt.Printf("\a")
 		return err
 	}
-	return beeep.Notify(title, message, "")
+	return desktopNotify(title, message, icon)
 }
 
 type eventHandler struct {
@@ -1432,11 +1446,18 @@ func (eh *eventHandler) Handle(evt interface{}) {
 		eh.sm.refreshChats(v.FromFullSync)
 	case *events.Connected:
 		eh.sm.StatusChannel <- StatusMsg{true, nil}
+		eh.sm.connection.connected()
 	case *events.Disconnected:
 		eh.sm.StatusChannel <- StatusMsg{false, nil}
+		eh.sm.connection.disconnected()
+	case *events.KeepAliveTimeout:
+		eh.sm.connection.unresponsive()
+	case *events.KeepAliveRestored:
+		eh.sm.connection.connected()
 	case *events.LoggedOut:
 		eh.sm.StatusChannel <- StatusMsg{false, nil}
 		eh.sm.uiHandler.PrintText("Logged out: " + fmt.Sprintf("%v", v.Reason))
+		eh.sm.connection.loggedOut(fmt.Sprintf("%v", v.Reason))
 	}
 }
 
@@ -1471,9 +1492,13 @@ func (eh *eventHandler) handleLiveMessage(evt *events.Message) {
 			eh.sm.uiHandler.NewScreen(eh.sm.getMessages(msg.ChatId))
 		}
 	} else if markUnread && msg.Timestamp > uint64(time.Now().Unix()-30) {
-		if err := notify(msg.ContactShort, msg.Text); err != nil {
-			eh.sm.uiHandler.PrintError(err)
-		}
+		// showing it can take a moment, e.g. on Windows, which starts PowerShell
+		title, text := notificationText(msg, eh.sm.db.GetIdName(msg.ChatId))
+		go func() {
+			if err := sendNotification(title, text, eh.sm.chatPicture(msg.ChatId)); err != nil {
+				eh.sm.uiHandler.PrintError(err)
+			}
+		}()
 	}
 	eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
 }

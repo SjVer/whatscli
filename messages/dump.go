@@ -66,6 +66,9 @@ func (sm *SessionManager) logAppState(kind string, jid types.JID, timestamp time
 func (sm *SessionManager) DumpChat(w io.Writer, chatID string) {
 	msgs := sm.db.GetMessages(chatID)
 	fmt.Fprintf(w, "=== %s (%s): %d messages ===\n", sm.db.GetIdName(chatID), chatID, len(msgs))
+	if picture := sm.chatPicture(chatID); picture != "" {
+		fmt.Fprintf(w, "picture: %s\n", picture)
+	}
 	for _, msg := range msgs {
 		sender := msg.ContactShort
 		if msg.FromMe {

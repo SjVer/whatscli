@@ -7,6 +7,7 @@ require (
 	github.com/adrg/xdg v0.3.3
 	github.com/gdamore/tcell/v2 v2.13.10
 	github.com/gen2brain/beeep v0.0.0-20210529141713-5586760f0cc1
+	github.com/go-toast/toast v0.0.0-20190211030409-01e6764cf0a4
 	github.com/kyokomi/emoji/v2 v2.2.14
 	github.com/mattn/go-colorable v0.1.14
 	github.com/mattn/go-sqlite3 v1.14.48
@@ -17,6 +18,7 @@ require (
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 	github.com/zyedidia/clipboard v1.0.3
 	go.mau.fi/whatsmeow v0.0.0-20260730092514-662ad1dc6900
+	golang.org/x/sys v0.47.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/ini.v1 v1.62.0
 )
@@ -27,7 +29,6 @@ require (
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
 	github.com/gdamore/encoding v1.0.1 // indirect
-	github.com/go-toast/toast v0.0.0-20190211030409-01e6764cf0a4 // indirect
 	github.com/godbus/dbus/v5 v5.0.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gopherjs/gopherjs v0.0.0-20210621113107-84c6004145de // indirect
@@ -44,7 +45,6 @@ require (
 	golang.org/x/exp v0.0.0-20260709172345-9ea1abe57597 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 )
