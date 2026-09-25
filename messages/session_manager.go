@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/proto/waSyncAction"
 	"go.mau.fi/whatsmeow/store"
@@ -640,7 +642,7 @@ func (sm *SessionManager) execCommand(command Command) {
 		sm.markCurrentChatRead()
 	case "info":
 		if checkParam(command.Params, 1) {
-			sm.uiHandler.PrintText(sm.db.GetMessageInfo(command.Params[0]))
+			sm.uiHandler.PrintText(sm.db.GetMessageInfo(command.Params[0]) + sm.reactionInfo(command.Params[0]))
 		} else {
 			sm.printCommandUsage("info", "[message-id[]")
 		}
@@ -662,6 +664,8 @@ func (sm *SessionManager) execCommand(command Command) {
 		sm.sendMediaCommand(command.Params, MessageKindAudio)
 	case "revoke":
 		sm.revokeMessage(command.Params)
+	case "react":
+		sm.sendReaction(command.Params)
 	case "leave":
 		sm.leaveCurrentGroup()
 	case "create":
@@ -880,6 +884,84 @@ func (sm *SessionManager) revokeMessage(params []string) {
 		sm.uiHandler.NewScreen(sm.getMessages(msg.ChatId))
 	}
 	sm.uiHandler.PrintText("revoked: " + msg.Id)
+}
+
+// sendReaction reacts to the message with the id in params[0] with the emoji in
+// params[1], or removes the reaction without one
+func (sm *SessionManager) sendReaction(params []string) {
+	if !checkParam(params, 1) {
+		sm.printCommandUsage("react", "[message-id[] [emoji[]")
+		return
+	}
+	if sm.client == nil || !sm.client.IsConnected() {
+		sm.uiHandler.PrintError(errors.New("not connected to WhatsApp"))
+		return
+	}
+	msg, ok := sm.db.GetMessage(params[0])
+	if !ok {
+		sm.uiHandler.PrintError(errors.New("message not found"))
+		return
+	}
+	chatJID, err := types.ParseJID(msg.ChatId)
+	if err != nil {
+		sm.uiHandler.PrintError(fmt.Errorf("invalid chat JID: %v", err))
+		return
+	}
+	// an empty sender means a message of your own
+	sender := types.EmptyJID
+	if !msg.FromMe {
+		if sender, err = types.ParseJID(msg.SenderId); err != nil || sender.IsEmpty() {
+			sender = chatJID
+		}
+	}
+	reaction := strings.Join(params[1:], " ")
+	if _, err = sm.client.SendMessage(context.Background(), chatJID, sm.client.BuildReaction(chatJID, sender, types.MessageID(msg.Id), reaction)); err != nil {
+		sm.uiHandler.PrintError(fmt.Errorf("failed to send reaction: %v", err))
+		return
+	}
+	if chatID, ok := sm.db.SetReaction(msg.Id, ReactorMe, reaction); ok && chatID == sm.currentReceiver {
+		sm.uiHandler.NewScreen(sm.getMessages(chatID))
+	}
+}
+
+// reactionInfo lists who reacted to a message with what, for the message info
+func (sm *SessionManager) reactionInfo(messageID string) string {
+	msg, ok := sm.db.GetMessage(messageID)
+	if !ok || len(msg.Reactions) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(msg.Reactions))
+	for reactor, reaction := range msg.Reactions {
+		name := "You"
+		if reactor != ReactorMe {
+			name = reactor
+			if jid, err := types.ParseJID(reactor); err == nil {
+				_, name, _ = sm.contactNames(jid)
+			}
+		}
+		lines = append(lines, "  "+reaction+" "+tview.Escape(name))
+	}
+	sort.Strings(lines)
+	return "\nReactions:\n" + strings.Join(lines, "\n")
+}
+
+// reactorID returns the key of a reaction in Message.Reactions
+func (sm *SessionManager) reactorID(sender types.JID, fromMe bool) string {
+	if fromMe {
+		return ReactorMe
+	}
+	return sm.chatIdForJID(sender)
+}
+
+// reactorFromKey returns who reacted from the key of a reaction in the chat history
+func (sm *SessionManager) reactorFromKey(key *waCommon.MessageKey, chat types.JID) string {
+	if key.GetFromMe() {
+		return ReactorMe
+	}
+	if participant, err := types.ParseJID(key.GetParticipant()); err == nil && !participant.IsEmpty() {
+		return sm.chatIdForJID(participant)
+	}
+	return sm.chatIdForJID(chat)
 }
 
 func (sm *SessionManager) leaveCurrentGroup() {
@@ -1236,6 +1318,11 @@ func (eh *eventHandler) handleLiveMessage(evt *events.Message) {
 	}
 
 	switch action {
+	case "react":
+		if chatID, ok := eh.sm.db.SetReaction(msg.Id, msg.SenderId, msg.Text); ok && chatID == eh.sm.currentReceiver {
+			eh.sm.uiHandler.NewScreen(eh.sm.getMessages(chatID))
+		}
+		return
 	case "revoke":
 		if eh.sm.db.MarkMessageRevoked(msg.Id) && eh.sm.currentReceiver == msg.ChatId {
 			eh.sm.uiHandler.NewScreen(eh.sm.getMessages(msg.ChatId))
@@ -1336,6 +1423,10 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 				continue
 			}
 			msg, action, ok := eh.normalizeEventMessage(parsed)
+			if ok && action == "react" {
+				eh.sm.db.SetReaction(msg.Id, msg.SenderId, msg.Text)
+				continue
+			}
 			if !ok || action != "" {
 				continue
 			}
@@ -1346,6 +1437,9 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 			}
 			eh.sm.db.AddMessage(msg, false)
 			messageCount++
+			for _, reaction := range webMsg.GetReactions() {
+				eh.sm.db.SetReaction(msg.Id, eh.sm.reactorFromKey(reaction.GetKey(), chatJID), reaction.GetText())
+			}
 		}
 		eh.sm.db.UpdateChatUnread(chatID, int(conv.GetUnreadCount()))
 
@@ -1382,6 +1476,16 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 func (eh *eventHandler) normalizeEventMessage(evt *events.Message) (Message, string, bool) {
 	if evt == nil || evt.Message == nil {
 		return Message{}, "ignore", false
+	}
+
+	// a reaction carries the message it reacts to in Id, the emoji in Text and who reacted in SenderId
+	if reaction := evt.Message.GetReactionMessage(); reaction != nil {
+		return Message{
+			Id:       reaction.GetKey().GetID(),
+			ChatId:   eh.sm.chatIdForJID(evt.Info.Chat),
+			Text:     reaction.GetText(),
+			SenderId: eh.sm.reactorID(evt.Info.Sender, evt.Info.IsFromMe),
+		}, "react", true
 	}
 
 	if protocol := evt.Message.GetProtocolMessage(); protocol != nil {

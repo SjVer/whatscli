@@ -26,6 +26,8 @@ type MessageDatabase struct {
 	keepArchived bool
 	// how many of the newest messages of each chat are saved
 	savedMessages int
+	// reactions to messages that are not loaded yet
+	pendingReactions map[string]map[string]string
 
 	contactLock sync.RWMutex
 	chatLock    sync.RWMutex
@@ -331,6 +333,10 @@ func (md *MessageDatabase) AddMessage(msg Message, markUnread bool) bool {
 	}
 
 	msg.Unread = markUnread
+	for reactor, reaction := range md.pendingReactions[msg.Id] {
+		msg.Reactions = withReaction(msg.Reactions, reactor, reaction)
+	}
+	delete(md.pendingReactions, msg.Id)
 	md.messagesById[msg.Id] = msg
 	md.messages[msg.ChatId] = append(md.messages[msg.ChatId], msg)
 	md.updateChatFromMessageLocked(msg, markUnread)
@@ -500,6 +506,47 @@ func (md *MessageDatabase) MarkChatRead(chatID string) []Message {
 	return cleared
 }
 
+// SetReaction sets the emoji reaction of reactor to a message, an empty reaction
+// removes it. Returns the chat of the message, and false if the message is not
+// loaded yet, in which case the reaction is added when it is.
+func (md *MessageDatabase) SetReaction(messageID, reactor, reaction string) (string, bool) {
+	md.messageLock.Lock()
+	defer md.messageLock.Unlock()
+	msg, ok := md.messagesById[messageID]
+	if !ok {
+		if md.pendingReactions == nil {
+			md.pendingReactions = make(map[string]map[string]string)
+		}
+		md.pendingReactions[messageID] = withReaction(md.pendingReactions[messageID], reactor, reaction)
+		return "", false
+	}
+	msg.Reactions = withReaction(msg.Reactions, reactor, reaction)
+	md.messagesById[messageID] = msg
+	md.replaceMessageLocked(msg)
+	md.chatLock.Lock()
+	md.scheduleSaveLocked()
+	md.chatLock.Unlock()
+	return msg.ChatId, true
+}
+
+// withReaction returns a copy of reactions with the reaction of reactor set,
+// as messages are copied and would otherwise share the map
+func withReaction(reactions map[string]string, reactor, reaction string) map[string]string {
+	updated := make(map[string]string, len(reactions)+1)
+	for key, value := range reactions {
+		updated[key] = value
+	}
+	if reaction == "" {
+		delete(updated, reactor)
+	} else {
+		updated[reactor] = reaction
+	}
+	if len(updated) == 0 {
+		return nil
+	}
+	return updated
+}
+
 // UpdateContactNames sets the sender id and names of all messages in memory to
 // what names returns for their current sender id, if it returns ok.
 func (md *MessageDatabase) UpdateContactNames(names func(contactID string) (string, string, string, bool)) {
@@ -656,23 +703,18 @@ func (md *MessageDatabase) GetMessageInfo(id string) string {
 	}
 
 	info := fmt.Sprintf(
-		"ID: %s\nType: %s\nFrom: %s (%s) %s\nTime: %s\nChat: %s",
-		msg.Id,
+		"Type: %s\nFrom: %s (%s) %s\nTime: %s",
 		kind,
 		name,
 		short,
 		direction,
 		time.Unix(int64(msg.Timestamp), 0).Format(time.RFC1123),
-		msg.ChatId,
 	)
 	if msg.FileName != "" {
 		info += "\nFile: " + msg.FileName
 	}
 	if msg.MimeType != "" {
 		info += "\nMIME: " + msg.MimeType
-	}
-	if msg.SenderId != "" {
-		info += "\nSender: " + msg.SenderId
 	}
 	return info
 }

@@ -90,3 +90,19 @@ func TestHighlightSearch(t *testing.T) {
 		t.Fatalf("expected text to be escaped without a search, got %q", actual)
 	}
 }
+
+func TestReactionSummary(t *testing.T) {
+	summary := reactionSummary(map[string]string{"a": "👍", "b": "❤️", "c": "👍", "me": "😭"})
+	if summary != "👍2 ❤️ 😭" {
+		t.Fatalf("unexpected summary %q", summary)
+	}
+	if reactionSummary(nil) != "" {
+		t.Fatal("expected no summary without reactions")
+	}
+	msg := messages.Message{Id: "1", ContactId: "mam", ContactShort: "Mam", Timestamp: 1000, Text: "hi",
+		Reactions: map[string]string{"me": "👍"}}
+	lines := strings.Split(getTextMessageString(&msg, nil), "\n")
+	if len(lines) != 3 || !strings.Contains(lines[2], "↳") || !strings.Contains(lines[2], "👍") {
+		t.Fatalf("expected the marked reactions on a line below the message, got %q", lines)
+	}
+}

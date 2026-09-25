@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -38,6 +39,9 @@ var archivedExpanded bool = false
 // all chats as last set by the session manager, and the text the chat list is filtered by
 var allChats []messages.Chat
 var chatSearch string
+
+// the message that /react reacts to, selected with the react key
+var reactTarget string
 
 // all messages of the displayed chat, and the text they are filtered by
 var chatMessages []messages.Message
@@ -318,6 +322,36 @@ func handleMessageCommand(command string) func(ev *tcell.EventKey) *tcell.EventK
 	}
 }
 
+// starts a reaction to the selected message, the emoji is typed in the input
+func handleMessageReact(ev *tcell.EventKey) *tcell.EventKey {
+	hls := textView.GetHighlights()
+	if len(hls) == 0 {
+		return nil
+	}
+	reactTarget = hls[0]
+	textInput.SetText(config.Config.General.CmdPrefix + "react ")
+	app.SetFocus(textInput)
+	return nil
+}
+
+// React reacts with an emoji to the message selected with the react key, or
+// removes the reaction without one
+func React(emoji string) {
+	target := reactTarget
+	reactTarget = ""
+	if target == "" {
+		if hls := textView.GetHighlights(); len(hls) > 0 {
+			target = hls[0]
+		}
+	}
+	if target == "" {
+		PrintText("select a message first: " + config.Config.Keymap.FocusMessages + " and up/down, then " + config.Config.Keymap.MessageReact)
+		return
+	}
+	sessionManager.CommandChannel <- messages.Command{Name: "react", Params: []string{target, emoji}}
+	ResetMsgSelection()
+}
+
 func handleMessagesMove(amount int) func(ev *tcell.EventKey) *tcell.EventKey {
 	return func(ev *tcell.EventKey) *tcell.EventKey {
 		if curRegions == nil || len(curRegions) == 0 {
@@ -463,6 +497,9 @@ func LoadShortcuts() {
 	if err := keysMessages.Set(config.Config.Keymap.MessageInfo, handleMessageCommand("info")); err != nil {
 		PrintErrorMsg("message_info:", err)
 	}
+	if err := keysMessages.Set(config.Config.Keymap.MessageReact, handleMessageReact); err != nil {
+		PrintErrorMsg("message_react:", err)
+	}
 	if err := keysMessages.Set(config.Config.Keymap.MessageRevoke, handleMessageCommand("revoke")); err != nil {
 		PrintErrorMsg("message_revoke:", err)
 	}
@@ -503,7 +540,8 @@ func PrintHelp() {
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageShow, "[::-] = Download & show image using", config.Config.General.ShowCommand)
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageUrl, "[::-] = Find URL in message and open it")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageRevoke, "[::-] = Revoke message")
-	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageInfo, "[::-] = Info about message")
+	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageReact, "[::-] = React to message, type the emoji after "+config.Config.General.CmdPrefix+"react")
+	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageInfo, "[::-] = Info about message, including who reacted")
 	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "Config file in ->", config.GetConfigFilePath())
 	fmt.Fprintln(textView, "")
@@ -552,6 +590,7 @@ func PrintCommands() {
 func EnterCommand(key tcell.Key) {
 	if key == tcell.KeyEsc {
 		// clear the input first, then the search results
+		reactTarget = ""
 		if sndTxt != "" {
 			textInput.SetText("")
 		} else if messageSearch != "" || chatSearch != "" {
@@ -570,6 +609,11 @@ func EnterCommand(key tcell.Key) {
 	}
 	if sndTxt == cmdPrefix+"commands" {
 		PrintCommands()
+		textInput.SetText("")
+		return
+	}
+	if sndTxt == cmdPrefix+"react" || strings.HasPrefix(sndTxt, cmdPrefix+"react ") {
+		React(strings.TrimSpace(strings.TrimPrefix(sndTxt, cmdPrefix+"react")))
 		textInput.SetText("")
 		return
 	}
@@ -752,6 +796,33 @@ func continuesGroup(prev *messages.Message, msg *messages.Message) bool {
 	return gap >= 0 && gap <= messageGroupGap
 }
 
+// reactionSummary returns the emoji reactions to a message, the most given
+// first, with how often they were given if more than once
+func reactionSummary(reactions map[string]string) string {
+	counts := make(map[string]int)
+	for _, reaction := range reactions {
+		counts[reaction]++
+	}
+	emojis := make([]string, 0, len(counts))
+	for emoji := range counts {
+		emojis = append(emojis, emoji)
+	}
+	sort.Slice(emojis, func(i, j int) bool {
+		if counts[emojis[i]] != counts[emojis[j]] {
+			return counts[emojis[i]] > counts[emojis[j]]
+		}
+		return emojis[i] < emojis[j]
+	})
+	parts := make([]string, len(emojis))
+	for idx, emoji := range emojis {
+		parts[idx] = tview.Escape(emoji)
+		if counts[emoji] > 1 {
+			parts[idx] += fmt.Sprint(counts[emoji])
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
 // formatMessageTime returns a short time for a message, with as much of the date
 // as is needed to tell when it was sent
 func formatMessageTime(sent time.Time, now time.Time) string {
@@ -797,6 +868,10 @@ func getTextMessageString(msg *messages.Message, prev *messages.Message) string 
 	out += msg.Id
 	out += "\"]"
 	out += header + text
+	// marked so they can't be mistaken for a message that is only an emoji
+	if reactions := reactionSummary(msg.Reactions); reactions != "" {
+		out += "\n[gray::-] ↳" + reactions + "[-::-]"
+	}
 	out += "[\"\"]"
 	return out
 }

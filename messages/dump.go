@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -78,6 +79,14 @@ func (sm *SessionManager) DumpChat(w io.Writer, chatID string) {
 			sender = "Me"
 		}
 		fmt.Fprintf(w, "%s %s: %s\n", formatTimestamp(int64(msg.Timestamp)), sender, strings.ReplaceAll(msg.Text, "\n", " "))
+		if len(msg.Reactions) > 0 {
+			reactions := make([]string, 0, len(msg.Reactions))
+			for reactor, reaction := range msg.Reactions {
+				reactions = append(reactions, reaction+" "+sm.db.GetIdShort(reactor))
+			}
+			sort.Strings(reactions)
+			fmt.Fprintf(w, "  reactions: %s\n", strings.Join(reactions, ", "))
+		}
 	}
 }
 

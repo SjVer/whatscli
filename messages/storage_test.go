@@ -267,3 +267,45 @@ func TestLoadChatsReadsNewestMessageOfEarlierVersions(t *testing.T) {
 		t.Fatalf("expected the newest message saved by an earlier version, got %+v", msgs)
 	}
 }
+
+func TestSetReaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chats.json")
+	db := &MessageDatabase{}
+	db.Init()
+	if err := db.LoadChats(path, 10); err != nil {
+		t.Fatal(err)
+	}
+	db.AddMessage(Message{Id: "m1", ChatId: "123@s.whatsapp.net", Timestamp: 100}, false)
+
+	if chatID, ok := db.SetReaction("m1", "456@s.whatsapp.net", "👍"); !ok || chatID != "123@s.whatsapp.net" {
+		t.Fatal("expected the reaction to be set on the loaded message")
+	}
+	db.SetReaction("m1", ReactorMe, "😭")
+	db.SetReaction("m1", ReactorMe, "❤️") // replaces the own reaction
+	if msg, _ := db.GetMessage("m1"); len(msg.Reactions) != 2 || msg.Reactions[ReactorMe] != "❤️" {
+		t.Fatalf("unexpected reactions %v", msg.Reactions)
+	}
+	db.SetReaction("m1", "456@s.whatsapp.net", "") // removes it
+	db.saveChats()
+
+	loaded := &MessageDatabase{}
+	loaded.Init()
+	if err := loaded.LoadChats(path, 10); err != nil {
+		t.Fatal(err)
+	}
+	if msg, _ := loaded.GetMessage("m1"); len(msg.Reactions) != 1 || msg.Reactions[ReactorMe] != "❤️" {
+		t.Fatalf("expected the reactions to be saved, got %v", msg.Reactions)
+	}
+}
+
+func TestReactionToMessageLoadedLater(t *testing.T) {
+	db := &MessageDatabase{}
+	db.Init()
+	if _, ok := db.SetReaction("old", "456@s.whatsapp.net", "👍"); ok {
+		t.Fatal("expected the message not to be loaded yet")
+	}
+	db.AddMessage(Message{Id: "old", ChatId: "123@s.whatsapp.net", Timestamp: 100}, false)
+	if msg, _ := db.GetMessage("old"); msg.Reactions["456@s.whatsapp.net"] != "👍" {
+		t.Fatalf("expected the reaction to be added when the message is loaded, got %v", msg.Reactions)
+	}
+}

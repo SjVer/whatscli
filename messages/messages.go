@@ -78,7 +78,12 @@ type Message struct {
 	FileName     string
 	Unread       bool
 	RawMessage   *waProto.Message `json:"-"` // saved as SavedMessage.Raw
+	// emoji reactions by who reacted, see ReactorMe
+	Reactions map[string]string `json:",omitempty"`
 }
+
+// ReactorMe is the key of the user's own reaction in Message.Reactions
+const ReactorMe = "me"
 
 // SavedMessage is a message as it is saved with its chat.
 type SavedMessage struct {
