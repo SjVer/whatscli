@@ -702,22 +702,30 @@ func (sm *SessionManager) markCurrentChatRead() {
 		sm.printCommandUsage("read", "-> only works in a chat")
 		return
 	}
-	if sm.client == nil || !sm.client.IsConnected() {
-		sm.uiHandler.PrintError(errors.New("not connected to WhatsApp"))
-		return
-	}
-
-	chatJID, err := types.ParseJID(sm.currentReceiver)
+	count, err := sm.markChatRead(sm.currentReceiver)
 	if err != nil {
-		sm.uiHandler.PrintError(fmt.Errorf("invalid JID: %v", err))
-		return
+		sm.uiHandler.PrintError(err)
+	} else if count == 0 {
+		sm.uiHandler.PrintText("No unread messages in current chat")
+	}
+}
+
+// markChatRead marks the unread messages of a chat as read, also on the phone,
+// and returns how many there were.
+func (sm *SessionManager) markChatRead(chatID string) (int, error) {
+	if sm.client == nil || !sm.client.IsConnected() {
+		return 0, errors.New("not connected to WhatsApp")
 	}
 
-	unreadMessages := sm.db.MarkChatRead(sm.currentReceiver)
+	chatJID, err := types.ParseJID(chatID)
+	if err != nil {
+		return 0, fmt.Errorf("invalid JID: %v", err)
+	}
+
+	unreadMessages := sm.db.MarkChatRead(chatID)
+	sm.uiHandler.SetChats(sm.db.GetChatIds())
 	if len(unreadMessages) == 0 {
-		sm.uiHandler.SetChats(sm.db.GetChatIds())
-		sm.uiHandler.PrintText("No unread messages in current chat")
-		return
+		return 0, nil
 	}
 
 	type senderBatch struct {
@@ -728,7 +736,7 @@ func (sm *SessionManager) markCurrentChatRead() {
 	batches := make(map[string]*senderBatch)
 	for _, msg := range unreadMessages {
 		sender := chatJID
-		if strings.Contains(sm.currentReceiver, GROUPSUFFIX) && msg.SenderId != "" {
+		if strings.Contains(chatID, GROUPSUFFIX) && msg.SenderId != "" {
 			sender, err = types.ParseJID(msg.SenderId)
 			if err != nil {
 				continue
@@ -745,16 +753,16 @@ func (sm *SessionManager) markCurrentChatRead() {
 		}
 	}
 
+	var failed error
 	for _, batch := range batches {
 		if batch.timestamp.IsZero() {
 			batch.timestamp = time.Now()
 		}
 		if err := sm.client.MarkRead(context.Background(), batch.ids, batch.timestamp, chatJID, batch.sender); err != nil {
-			sm.uiHandler.PrintError(fmt.Errorf("failed to mark messages as read: %v", err))
+			failed = fmt.Errorf("failed to mark messages as read: %v", err)
 		}
 	}
-
-	sm.uiHandler.SetChats(sm.db.GetChatIds())
+	return len(unreadMessages), failed
 }
 
 func (sm *SessionManager) downloadCommand(params []string, preview, show bool) {
@@ -1096,11 +1104,21 @@ func (sm *SessionManager) sendText(wid, text string) {
 	}
 
 	newMsg := sm.outgoingMessageFromSendResponse(resp, wid, raw, MessageKindText, text, "", "")
-	sm.db.AddMessage(newMsg, false)
-	if sm.currentReceiver == wid {
-		sm.uiHandler.NewMessage(newMsg)
+	sm.messageSent(newMsg)
+}
+
+// messageSent shows a message that was sent, and marks its chat as read if configured.
+func (sm *SessionManager) messageSent(msg Message) {
+	sm.db.AddMessage(msg, false)
+	if sm.currentReceiver == msg.ChatId {
+		sm.uiHandler.NewMessage(msg)
 	}
 	sm.uiHandler.SetChats(sm.db.GetChatIds())
+	if config.Config.General.MarkReadOnSend {
+		if _, err := sm.markChatRead(msg.ChatId); err != nil {
+			sm.uiHandler.PrintError(err)
+		}
+	}
 }
 
 func (sm *SessionManager) sendMedia(chatID, path string, kind MessageKind) error {
@@ -1181,11 +1199,7 @@ func (sm *SessionManager) sendMedia(chatID, path string, kind MessageKind) error
 
 	text := mediaDisplayText(kind, fileName, "")
 	newMsg := sm.outgoingMessageFromSendResponse(resp, chatID, raw, kind, text, mimeType, fileName)
-	sm.db.AddMessage(newMsg, false)
-	if sm.currentReceiver == chatID {
-		sm.uiHandler.NewMessage(newMsg)
-	}
-	sm.uiHandler.SetChats(sm.db.GetChatIds())
+	sm.messageSent(newMsg)
 	return nil
 }
 

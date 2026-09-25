@@ -131,3 +131,38 @@ func TestGrownInputShowsAllLines(t *testing.T) {
 		t.Fatalf("expected both lines at the bottom, got %d lines: %q, %q", inputLines, row(6), row(7))
 	}
 }
+
+func TestGreyChatListKeepsUnreadCountsColored(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(30, 4)
+	root := setNodeColor(tview.NewTreeNode("Chats"), tcell.ColorNames[config.Config.Colors.ListHeader])
+	root.AddChild(setNodeColor(tview.NewTreeNode(chatNodeText(messages.Chat{Id: "mam", Name: "Mam", Unread: 3})), tcell.ColorGreen))
+	treeView = tview.NewTreeView().SetRoot(root).SetCurrentNode(root)
+	treeView.SetRect(0, 0, 30, 4)
+	textView = tview.NewTextView()
+	textView.Focus(func(tview.Primitive) {}) // the chat list is greyed out
+	treeView.Draw(screen)
+	greyOutUnfocusedPanel(screen)
+
+	colorOf := func(target rune) tcell.Color {
+		for y := 0; y < 4; y++ {
+			for x := 0; x < 30; x++ {
+				if r, _, style, _ := screen.GetContent(x, y); r == target {
+					fg, _, _ := style.Decompose()
+					return fg
+				}
+			}
+		}
+		t.Fatalf("%c not drawn", target)
+		return 0
+	}
+	if colorOf('3') != tcell.ColorNames[config.Config.Colors.UnreadCount] {
+		t.Error("expected the unread count to keep its color")
+	}
+	if colorOf('M') != tcell.ColorGray || colorOf('C') != tcell.ColorGray {
+		t.Error("expected the chat names and header to be grey")
+	}
+}

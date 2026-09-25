@@ -144,6 +144,9 @@ var shortcodePattern = regexp.MustCompile(`(^|[\s\p{S}\x{FE0F}\x{20E3}]):([\p{L}
 // replaceShortcodes replaces the known shortcodes in text with their emoji,
 // and remembers them as recently used
 func replaceShortcodes(text string) string {
+	if !config.Config.General.EmojiShortcodes {
+		return text
+	}
 	// again until nothing changes, as :joy::joy: only has the second one after
 	// an emoji once the first one was replaced
 	for {
@@ -227,6 +230,10 @@ func closeEmojiPopup() {
 // updateEmojiSuggestions shows suggestions for the shortcode typed before the
 // cursor, or replaces it with its emoji when its closing colon was typed
 func updateEmojiSuggestions() {
+	if !config.Config.General.EmojiShortcodes {
+		closeEmojiPopup()
+		return
+	}
 	text := textInput.GetText()
 	selected, cursor, _ := textInput.GetSelection()
 	if selected != "" {

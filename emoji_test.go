@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/normen/whatscli/config"
 	"github.com/rivo/tview"
 )
 
@@ -184,5 +185,23 @@ func TestEmojiAreColored(t *testing.T) {
 	}
 	if colorEmoji("😭") != "😭" || colorEmoji("♥") != "♥️" {
 		t.Fatal("expected only black and white symbols to get a variation selector")
+	}
+}
+
+func TestEmojiShortcodesCanBeDisabled(t *testing.T) {
+	config.Config.General.EmojiShortcodes = false
+	defer func() { config.Config.General.EmojiShortcodes = true }()
+
+	if text := replaceShortcodes("so funny :joy:"); text != "so funny :joy:" {
+		t.Fatalf("expected no replacement, got %q", text)
+	}
+	textInput = newTextInput()
+	typeText("hi :so")
+	if emojiPopupOpen() {
+		t.Fatal("expected no suggestions")
+	}
+	typeText("b:")
+	if text := textInput.GetText(); text != "hi :sob:" {
+		t.Fatalf("expected the shortcode to stay, got %q", text)
 	}
 }

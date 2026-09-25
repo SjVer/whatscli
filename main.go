@@ -361,9 +361,18 @@ func greyOutUnfocusedPanel(screen tcell.Screen) {
 	for cy := y; cy < y+height; cy++ {
 		for cx := x; cx < x+width; cx++ {
 			mainc, combc, style, _ := screen.GetContent(cx, cy)
-			screen.SetContent(cx, cy, mainc, combc, style.Foreground(tcell.ColorGray))
+			// unread counts keep their color, to still stand out
+			if !isUnreadCount(style) {
+				screen.SetContent(cx, cy, mainc, combc, style.Foreground(tcell.ColorGray))
+			}
 		}
 	}
+}
+
+// isUnreadCount returns whether a cell of the chat list shows an unread count
+func isUnreadCount(style tcell.Style) bool {
+	fg, _, attr := style.Decompose()
+	return fg == tcell.ColorNames[config.Config.Colors.UnreadCount] && attr&tcell.AttrBold != 0
 }
 
 func handleFocusMessage(ev *tcell.EventKey) *tcell.EventKey {
@@ -681,6 +690,20 @@ func PrintHelp() {
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.FocusMessages, "[::-] = Focus message panel")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.CommandQuit, "[::-] = Exit app")
 	fmt.Fprintln(textView, "")
+	fmt.Fprintln(textView, "[-::-]Input[-::-]")
+	fmt.Fprintln(textView, "[::b] Enter[::-] = Send message")
+	fmt.Fprintln(textView, "[::b] Shift+Enter[::-] = New line")
+	fmt.Fprintln(textView, "[::b] Ctrl+Backspace / Ctrl+Delete[::-] = Delete word before / after the cursor")
+	fmt.Fprintln(textView, "")
+	fmt.Fprintln(textView, "[-::-]Emoji[-::-]")
+	if config.Config.General.EmojiShortcodes {
+		fmt.Fprintln(textView, "[::b] :name:[::-] = Type an emoji, e.g. :joy: gives 😂")
+		fmt.Fprintln(textView, "[::b] :na[::-] = Show suggestions, Tab to select, Enter to insert, Esc to close")
+		fmt.Fprintln(textView, " Recently used emoji are suggested first")
+	} else {
+		fmt.Fprintln(textView, " :name: shortcodes are off, see emoji_shortcodes in the config file")
+	}
+	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "[-::-]Message panel[-::-]")
 	fmt.Fprintln(textView, "[::b] Up/Down[::-] = select message")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageDownload, "[::-] = Download attachment")
@@ -713,6 +736,7 @@ func PrintCommands() {
 	fmt.Fprintln(textView, "[-::-]Chat[-::-]")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"backlog [::-]or[::b]", config.Config.Keymap.CommandBacklog, "[::-] = load next", config.Config.General.BacklogMsgQuantity, "previous messages")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"read [::-]or[::b]", config.Config.Keymap.CommandRead, "[::-] = mark new messages in chat as read")
+	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"react[::-] emoji  = React to the selected message, without an emoji the reaction is removed")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"search[::-] text  = Search the loaded messages of the chat, or chats and groups when Chats is selected")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"search[::-]  = Show everything again")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"upload[::-] /path/to/file  = Upload any file as document")
@@ -1234,7 +1258,8 @@ func chatNodeText(chat messages.Chat) string {
 		name += " ✎"
 	}
 	if chat.Unread > 0 {
-		name += " ([" + config.Config.Colors.UnreadCount + "]" + fmt.Sprint(chat.Unread) + "[-])"
+		// bold, so that isUnreadCount can tell it from headers in the same color
+		name += " ([" + config.Config.Colors.UnreadCount + "::b]" + fmt.Sprint(chat.Unread) + "[-::-])"
 	}
 	// search results show archived chats among the others
 	if chat.InArchive && chatSearch != "" {

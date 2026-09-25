@@ -28,6 +28,10 @@ type General struct {
 	UseTerminalBell     bool
 	NotificationTimeout int64
 	BacklogMsgQuantity  int
+	// typing :name: gives emoji, with suggestions
+	EmojiShortcodes bool
+	// sending a message to a chat marks it as read
+	MarkReadOnSend bool
 }
 
 type Keymap struct {
@@ -82,6 +86,8 @@ var Config = IniFile{
 		UseTerminalBell:     false,
 		NotificationTimeout: 60,
 		BacklogMsgQuantity:  10,
+		EmojiShortcodes:     true,
+		MarkReadOnSend:      false,
 	},
 	&Keymap{
 		SwitchPanels:    "Tab",
