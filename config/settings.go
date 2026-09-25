@@ -60,20 +60,22 @@ type Ui struct {
 }
 
 type Colors struct {
-	Background      string
-	Text            string
-	ForwardedText   string
-	ListHeader      string
-	ListContact     string
-	ListGroup       string
-	ChatContact     string
-	ChatMe          string
-	Borders         string
-	InputBackground string
-	InputText       string
-	UnreadCount     string
-	Positive        string
-	Negative        string
+	Background        string
+	Text              string
+	ForwardedText     string
+	ListHeader        string
+	ListContact       string
+	ListGroup         string
+	ChatContact       string
+	ChatMe            string
+	Borders           string
+	InputBackground   string
+	InputText         string
+	SilentCommandText string
+	CommandText       string
+	UnreadCount       string
+	Positive          string
+	Negative          string
 }
 
 var Config = IniFile{
@@ -113,20 +115,22 @@ var Config = IniFile{
 		ChatSidebarWidth: 30,
 	},
 	&Colors{
-		Background:      "black",
-		Text:            "white",
-		ForwardedText:   "purple",
-		ListHeader:      "yellow",
-		ListContact:     "green",
-		ListGroup:       "blue",
-		ChatContact:     "green",
-		ChatMe:          "blue",
-		Borders:         "white",
-		InputBackground: "blue",
-		InputText:       "white",
-		UnreadCount:     "yellow",
-		Positive:        "green",
-		Negative:        "red",
+		Background:        "black",
+		Text:              "white",
+		ForwardedText:     "purple",
+		ListHeader:        "yellow",
+		ListContact:       "green",
+		ListGroup:         "blue",
+		ChatContact:       "green",
+		ChatMe:            "blue",
+		Borders:           "white",
+		InputBackground:   "blue",
+		InputText:         "white",
+		SilentCommandText: "purple",
+		CommandText:       "blue",
+		UnreadCount:       "yellow",
+		Positive:          "green",
+		Negative:          "red",
 	},
 }
 

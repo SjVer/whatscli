@@ -159,6 +159,7 @@ func newTextInput() *tview.TextArea {
 		Foreground(tcell.ColorNames[config.Config.Colors.InputText]))
 	input.SetChangedFunc(func() {
 		sndTxt = textInput.GetText()
+		updateInputColor()
 		updateEmojiSuggestions()
 	})
 	input.SetMovedFunc(updateEmojiSuggestions)
@@ -249,7 +250,35 @@ var inputLines = 1
 func setInput(text string) {
 	textInput.SetText(text, true)
 	sndTxt = text
+	updateInputColor()
 	updateEmojiSuggestions()
+}
+
+// sendingCommands put something into the chat, unlike the silent commands
+var sendingCommands = map[string]bool{
+	"send": true, "upload": true, "sendimage": true, "sendvideo": true, "sendaudio": true, "react": true,
+}
+
+// parseCommand returns whether text is a command, and whether it is silent,
+// sending nothing to the chat
+func parseCommand(text string) (isCommand bool, silent bool) {
+	command, ok := strings.CutPrefix(text, config.Config.General.CmdPrefix)
+	if !ok {
+		return false, false
+	}
+	name, _, _ := strings.Cut(command, " ")
+	return true, !sendingCommands[name]
+}
+
+// updateInputColor shows commands in their own colors, silent ones apart
+func updateInputColor() {
+	color := config.Config.Colors.InputText
+	if isCommand, silent := parseCommand(textInput.GetText()); silent {
+		color = config.Config.Colors.SilentCommandText
+	} else if isCommand {
+		color = config.Config.Colors.CommandText
+	}
+	textInput.SetTextStyle(textInput.GetTextStyle().Foreground(tcell.ColorNames[color]))
 }
 
 // updateInputHeight grows the input to fit its text, up to maxInputLines

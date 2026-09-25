@@ -271,3 +271,35 @@ func TestSyncText(t *testing.T) {
 		}
 	}
 }
+
+func TestCommandsAreColored(t *testing.T) {
+	textInput = newTextInput()
+	color := func() tcell.Color {
+		fg, _, _ := textInput.GetTextStyle().Decompose()
+		return fg
+	}
+	silentColor := tcell.ColorNames[config.Config.Colors.SilentCommandText]
+	commandColor := tcell.ColorNames[config.Config.Colors.CommandText]
+	inputColor := tcell.ColorNames[config.Config.Colors.InputText]
+
+	for text, expected := range map[string]tcell.Color{
+		"/search mam":         silentColor,
+		"/archive":            silentColor,
+		"/unknown":            silentColor,
+		"hello":               inputColor,
+		"/react 👍":            commandColor, // these send something to the chat
+		"/upload C:/file.txt": commandColor,
+	} {
+		setInput(text)
+		if color() != expected {
+			t.Errorf("%q: expected %v, got %v", text, expected, color())
+		}
+	}
+
+	// while typing too
+	setInput("")
+	typeText("/arch")
+	if color() != silentColor {
+		t.Error("expected a command being typed to be colored")
+	}
+}
