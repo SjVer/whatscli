@@ -47,6 +47,7 @@ func (md *MessageDatabase) Reset() error {
 	md.messageLock.Lock()
 	md.messages = make(map[string][]Message)
 	md.messagesById = make(map[string]Message)
+	md.pendingReactions = nil
 	md.messageLock.Unlock()
 	md.contactLock.Lock()
 	md.contacts = make(map[string]Contact)
@@ -85,21 +86,12 @@ func (md *MessageDatabase) LoadChats(path string, savedMessages int) error {
 	} else if err != nil {
 		return err
 	}
-	var chats []struct {
-		Chat
-		// saved by earlier versions, which only saved the newest message
-		Newest    *Message
-		NewestRaw []byte
-	}
+	var chats []Chat
 	if err = json.Unmarshal(data, &chats); err != nil {
 		return err
 	}
-	for _, saved := range chats {
-		chat := saved.Chat
+	for _, chat := range chats {
 		chat.Unread = 0
-		if saved.Newest != nil && len(chat.Recent) == 0 {
-			chat.Recent = []SavedMessage{{Message: *saved.Newest, Raw: saved.NewestRaw}}
-		}
 		for _, recent := range chat.Recent {
 			msg := recent.Message
 			if len(recent.Raw) > 0 {
@@ -217,6 +209,13 @@ func (md *MessageDatabase) SetChatDeleted(chatID string, deletedAt int64) {
 			chat.DeletedAt = deletedAt
 		}
 	})
+}
+
+// KeepArchived returns whether archived chats stay archived when new messages arrive.
+func (md *MessageDatabase) KeepArchived() bool {
+	md.chatLock.RLock()
+	defer md.chatLock.RUnlock()
+	return md.keepArchived
 }
 
 // SetKeepArchived sets whether archived chats stay archived when new messages arrive.
@@ -371,11 +370,9 @@ func (md *MessageDatabase) updateChatFromMessageLocked(msg Message, markUnread b
 	}
 	if int64(msg.Timestamp) > chat.LastMessage {
 		chat.LastMessage = int64(msg.Timestamp)
-		md.scheduleSaveLocked()
 	}
 	if !msg.FromMe && int64(msg.Timestamp) > chat.LastIncoming {
 		chat.LastIncoming = int64(msg.Timestamp)
-		md.scheduleSaveLocked()
 	}
 	// the message may be one of the saved newest ones
 	md.scheduleSaveLocked()
@@ -421,13 +418,9 @@ func (md *MessageDatabase) AddChat(chat Chat) {
 		if chat.LastIncoming < existing.LastIncoming {
 			chat.LastIncoming = existing.LastIncoming
 		}
-		if chat.IsGroup != existing.IsGroup || chat.Name != existing.Name || chat.LastMessage > existing.LastMessage {
-			md.scheduleSaveLocked()
-		}
-	} else if chat.LastMessage > 0 {
-		md.scheduleSaveLocked()
 	}
 	md.chats[chat.Id] = chat
+	md.scheduleSaveLocked()
 }
 
 // UpdateChatUnread syncs unread counts from external sources such as history sync.
@@ -548,21 +541,38 @@ func withReaction(reactions map[string]string, reactor, reaction string) map[str
 }
 
 // UpdateContactNames sets the sender id and names of all messages in memory to
-// what names returns for their current sender id, if it returns ok.
+// what names returns for their current sender id, if it returns ok. names is
+// called once per sender, without holding the lock, as it may be slow.
 func (md *MessageDatabase) UpdateContactNames(names func(contactID string) (string, string, string, bool)) {
+	md.messageLock.RLock()
+	senders := make(map[string]struct{})
+	for _, msgs := range md.messages {
+		for _, msg := range msgs {
+			if msg.ContactId != "" {
+				senders[msg.ContactId] = struct{}{}
+			}
+		}
+	}
+	md.messageLock.RUnlock()
+
+	type contactNames struct{ id, name, short string }
+	resolved := make(map[string]contactNames, len(senders))
+	for sender := range senders {
+		if id, name, short, ok := names(sender); ok {
+			resolved[sender] = contactNames{id, name, short}
+		}
+	}
+
 	md.messageLock.Lock()
 	defer md.messageLock.Unlock()
 	changed := false
 	for chatID, msgs := range md.messages {
 		for idx, msg := range msgs {
-			if msg.ContactId == "" {
+			names, ok := resolved[msg.ContactId]
+			if !ok || (names.id == msg.ContactId && names.name == msg.ContactName && names.short == msg.ContactShort) {
 				continue
 			}
-			id, name, short, ok := names(msg.ContactId)
-			if !ok || (id == msg.ContactId && name == msg.ContactName && short == msg.ContactShort) {
-				continue
-			}
-			msg.ContactId, msg.ContactName, msg.ContactShort = id, name, short
+			msg.ContactId, msg.ContactName, msg.ContactShort = names.id, names.name, names.short
 			msgs[idx] = msg
 			md.messagesById[msg.Id] = msg
 			changed = true
@@ -615,7 +625,7 @@ func (md *MessageDatabase) AddContact(contact Contact) {
 
 // GetChatIds returns pinned chats first, the last pinned one first, then the
 // other chats with the most recent message first.
-// Archived is set only for chats that are still archived: unless "keep chats archived"
+// InArchive is set for chats that are still archived: unless "keep chats archived"
 // is enabled, WhatsApp unarchives a chat when a message arrives that the user didn't send,
 // without syncing that.
 // Hidden is set for chats without messages since they were deleted, if they ever had any.
@@ -625,9 +635,7 @@ func (md *MessageDatabase) GetChatIds() []Chat {
 
 	allChats := make([]Chat, 0, len(md.chats))
 	for _, chat := range md.chats {
-		if chat.Archived && !md.keepArchived && chat.LastIncoming > chat.ArchivedAt {
-			chat.Archived = false
-		}
+		chat.InArchive = chat.Archived && (md.keepArchived || chat.LastIncoming <= chat.ArchivedAt)
 		chat.Hidden = !chat.Pinned && chat.LastMessage <= chat.DeletedAt
 		allChats = append(allChats, chat)
 	}

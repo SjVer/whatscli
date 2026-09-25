@@ -22,17 +22,31 @@ type historyRequests struct {
 	loaded map[string]bool
 }
 
-// loadChatOnce requests the messages before the newest one the first time a
-// chat is opened after starting whatscli. Returns whether it was the first time.
-func (sm *SessionManager) loadChatOnce(chatID string) bool {
+// errNoKnownMessage is returned by RequestChatHistory for a chat without messages in memory
+var errNoKnownMessage = errors.New("no message of this chat is known yet, it loads once a message arrives or after /relink")
+
+// loadChatOnce requests the messages before the saved ones the first time a chat
+// is opened after starting whatscli, and again next time if that failed.
+func (sm *SessionManager) loadChatOnce(chatID string) {
+	sm.history.lock.Lock()
+	loaded := sm.history.loaded[chatID]
+	sm.history.lock.Unlock()
+	if loaded {
+		return
+	}
+	err := sm.RequestChatHistory(chatID)
+	if errors.Is(err, errNoKnownMessage) {
+		return // e.g. a contact that was never written to
+	} else if err != nil {
+		sm.uiHandler.PrintText(err.Error())
+		return
+	}
 	sm.history.lock.Lock()
 	if sm.history.loaded == nil {
 		sm.history.loaded = make(map[string]bool)
 	}
-	first := !sm.history.loaded[chatID]
 	sm.history.loaded[chatID] = true
 	sm.history.lock.Unlock()
-	return first
 }
 
 // RequestChatHistory asks the phone for the messages of a chat before the oldest
@@ -48,14 +62,14 @@ func (sm *SessionManager) RequestChatHistory(chatID string) error {
 		return fmt.Errorf("invalid chat: %v", err)
 	}
 	// the phone knows one-to-one chats under their LID
-	if jid.Server == types.DefaultUserServer {
+	if jid.Server == types.DefaultUserServer && sm.client.Store.LIDs != nil {
 		if lid, err := sm.client.Store.LIDs.GetLIDForPN(context.Background(), jid); err == nil && !lid.IsEmpty() {
 			jid = lid
 		}
 	}
 	oldest, ok := sm.db.GetOldestMessage(chatID)
 	if !ok {
-		return errors.New("no message of this chat is known yet, it loads once a message arrives or after /relink")
+		return errNoKnownMessage
 	}
 	anchor := &types.MessageInfo{
 		MessageSource: types.MessageSource{Chat: jid, IsFromMe: oldest.FromMe, IsGroup: jid.Server == types.GroupServer},
@@ -94,6 +108,18 @@ func (sm *SessionManager) RequestChatHistory(chatID string) error {
 	return nil
 }
 
+// resetHistoryRequests forgets the requested and loaded chats, whose messages are removed.
+func (sm *SessionManager) resetHistoryRequests() {
+	sm.history.lock.Lock()
+	for _, timer := range sm.history.pending {
+		timer.Stop()
+	}
+	sm.history.pending = nil
+	sm.history.loaded = nil
+	sm.history.lock.Unlock()
+	sm.updateActivity()
+}
+
 // historyCount returns how many messages are loaded from the phone at a time,
 // and saved of each chat.
 func historyCount() int {
@@ -101,6 +127,19 @@ func historyCount() int {
 		return count
 	}
 	return 50 // recommended by whatsmeow
+}
+
+// finishAllHistoryRequests marks all requests as answered.
+func (sm *SessionManager) finishAllHistoryRequests() {
+	sm.history.lock.Lock()
+	chatIDs := make([]string, 0, len(sm.history.pending))
+	for chatID := range sm.history.pending {
+		chatIDs = append(chatIDs, chatID)
+	}
+	sm.history.lock.Unlock()
+	for _, chatID := range chatIDs {
+		sm.finishHistoryRequest(chatID)
+	}
 }
 
 // HistoryPending returns whether messages of a chat were requested and not received yet.

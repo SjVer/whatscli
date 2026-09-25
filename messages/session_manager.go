@@ -109,10 +109,10 @@ func (sm *SessionManager) Close() {
 	sm.db.saveChats()
 }
 
-// signal sends to ch without blocking when nobody is waiting.
-func signal(ch chan struct{}) {
+// signal sends value to ch without blocking when nobody is waiting.
+func signal[T any](ch chan T, value T) {
 	select {
-	case ch <- struct{}{}:
+	case ch <- value:
 	default:
 	}
 }
@@ -139,10 +139,7 @@ func (sm *SessionManager) runManager() error {
 
 	if err = sm.loginWithConnection(client); err != nil {
 		sm.uiHandler.PrintError(err)
-		select {
-		case sm.LoginFailed <- err:
-		default:
-		}
+		signal(sm.LoginFailed, err)
 	}
 
 	for sm.started {
@@ -191,11 +188,9 @@ func (sm *SessionManager) runManager() error {
 func (sm *SessionManager) setCurrentReceiver(id string) {
 	sm.currentReceiver = id
 	sm.uiHandler.NewScreen(sm.getMessages(id))
-	// only the newest message is saved, load the ones before it from the phone
-	if id != "" && sm.loadChatOnce(id) {
-		if err := sm.RequestChatHistory(id); err != nil {
-			sm.uiHandler.PrintText(err.Error())
-		}
+	// only the newest messages are saved, load the ones before them from the phone
+	if id != "" {
+		sm.loadChatOnce(id)
 	}
 }
 
@@ -364,7 +359,9 @@ func (sm *SessionManager) loginWithQRCode(client *whatsmeow.Client) error {
 
 func (sm *SessionManager) loadRecentChats() {
 	if sm.client == nil || !sm.client.IsConnected() {
-		sm.uiHandler.PrintError(errors.New("not connected to WhatsApp"))
+		err := errors.New("not connected to WhatsApp")
+		sm.uiHandler.PrintError(err)
+		signal(sm.LoginFailed, err)
 		return
 	}
 
@@ -410,7 +407,7 @@ func (sm *SessionManager) loadRecentChats() {
 		sm.printAppStateError(sm.client.FetchAppState(context.Background(), appstate.WAPatchRegularLow, true, false), appstate.WAPatchRegularLow)
 		sm.uiHandler.SetChats(sm.db.GetChatIds())
 	}
-	signal(sm.ChatsLoaded)
+	signal(sm.ChatsLoaded, struct{}{})
 }
 
 // hasAppStateKeys returns whether the phone has sent any keys to decrypt the app state.
@@ -427,35 +424,29 @@ func (sm *SessionManager) printAppStateError(err error, name appstate.WAPatchNam
 	}
 }
 
-// addContactChats adds a chat for every contact and returns how many there are.
+// addContactChats loads the contacts, adds a chat for every contact and returns
+// how many there are.
 func (sm *SessionManager) addContactChats() int {
-	sm.loadContacts()
+	if sm.client == nil || sm.client.Store.Contacts == nil {
+		return 0
+	}
+	contacts, err := sm.client.Store.Contacts.GetAllContacts(context.Background())
+	if err != nil {
+		sm.uiHandler.PrintError(fmt.Errorf("failed to load contacts: %v", err))
+		return 0
+	}
 	addedChats := 0
-
-	if sm.client.Store != nil && sm.client.Store.Contacts != nil {
-		contacts, err := sm.client.Store.Contacts.GetAllContacts(context.Background())
-		if err == nil {
-			for jid, contact := range contacts {
-				if jid.Server != types.DefaultUserServer {
-					continue
-				}
-				name := contact.FullName
-				if name == "" {
-					name = contact.PushName
-				}
-				if name == "" {
-					name = jid.User
-				}
-				sm.db.AddChat(Chat{
-					Id:      jid.String(),
-					IsGroup: false,
-					Name:    name,
-				})
-				addedChats++
-			}
+	for jid, contact := range contacts {
+		name, short := contactDisplayNames(contact)
+		if name == "" {
+			name = jid.User
+		}
+		sm.db.AddContact(Contact{Id: jid.String(), Name: name, Short: short})
+		if jid.Server == types.DefaultUserServer {
+			sm.db.AddChat(Chat{Id: jid.String(), Name: name})
+			addedChats++
 		}
 	}
-
 	sm.nameOwnChat(sm.client.Store.PushName)
 	return addedChats
 }
@@ -467,18 +458,20 @@ func (sm *SessionManager) nameOwnChat(pushName string) {
 	}
 }
 
-// learnLID stores that lid and pn are the same user, and merges a chat that was
-// stored under the LID. The phone sends these with the chat history, whatsmeow
+// learnLID stores that the users lid and pn are the same, and merges a chat that
+// was stored under the LID. The phone sends these with the chat history, whatsmeow
 // stores them too but in the background, so they may be missing when needed.
-func (sm *SessionManager) learnLID(lid, pn types.JID) {
-	if lid.Server != types.HiddenUserServer || pn.Server != types.DefaultUserServer || sm.client == nil {
+func (sm *SessionManager) learnLID(lid, pn string) {
+	lidJID, lidErr := types.ParseJID(lid)
+	pnJID, pnErr := types.ParseJID(pn)
+	if lidErr != nil || pnErr != nil || lidJID.Server != types.HiddenUserServer || pnJID.Server != types.DefaultUserServer || sm.client == nil {
 		return
 	}
-	lid, pn = lid.ToNonAD(), pn.ToNonAD()
-	if err := sm.client.Store.LIDs.PutLIDMapping(context.Background(), lid, pn); err != nil {
+	lidJID, pnJID = lidJID.ToNonAD(), pnJID.ToNonAD()
+	if err := sm.client.Store.LIDs.PutLIDMapping(context.Background(), lidJID, pnJID); err != nil {
 		return
 	}
-	sm.db.MergeChat(lid.String(), pn.String())
+	sm.db.MergeChat(lidJID.String(), pnJID.String())
 }
 
 // mergeLIDChats merges chats that were stored under a LID before its phone number was known.
@@ -519,65 +512,29 @@ func (sm *SessionManager) updateChatActivity(jid types.JID, msgRange *waSyncActi
 	if timestamp > 0 {
 		sm.db.UpdateChatLastMessage(sm.chatIdForJID(jid), timestamp)
 	}
-	// full syncs are followed by a single refresh in loadRecentChats
+	sm.refreshChats(fromFullSync)
+}
+
+// refreshChats shows the changed chat list after an app state event. Events of a
+// full sync are followed by one refresh when it completes, see AppStateSyncComplete.
+func (sm *SessionManager) refreshChats(fromFullSync bool) {
 	if !fromFullSync {
 		sm.uiHandler.SetChats(sm.db.GetChatIds())
 	}
 }
 
-func (sm *SessionManager) loadContacts() {
-	if sm.client == nil || sm.client.Store == nil || sm.client.Store.Contacts == nil {
-		return
-	}
-
-	contacts, err := sm.client.Store.Contacts.GetAllContacts(context.Background())
-	if err != nil {
-		sm.uiHandler.PrintError(fmt.Errorf("failed to load contacts: %v", err))
-		return
-	}
-
-	contactCount := 0
-	for jid, contact := range contacts {
-		name := contact.FullName
-		if name == "" {
-			name = contact.PushName
-		}
-		if name == "" {
-			name = jid.User
-		}
-		sm.db.AddContact(Contact{
-			Id:    jid.String(),
-			Name:  name,
-			Short: contact.PushName,
-		})
-		contactCount++
-	}
-	if contactCount > 0 {
-		sm.uiHandler.PrintText(fmt.Sprintf("Loaded %d contacts", contactCount))
-	}
-}
-
+// getChatName returns the name of a group or user.
 func (sm *SessionManager) getChatName(jid types.JID) string {
 	if jid.Server == types.GroupServer {
 		groupInfo, err := sm.client.GetGroupInfo(context.Background(), jid)
 		if err == nil && groupInfo.Name != "" {
 			return groupInfo.Name
 		}
+		return sm.db.GetIdName(jid.String())
 	}
-	if sm.client != nil && sm.client.Store != nil && sm.client.Store.Contacts != nil {
-		contact, err := sm.client.Store.Contacts.GetContact(context.Background(), jid)
-		if err == nil && contact.Found {
-			if contact.FullName != "" {
-				return contact.FullName
-			}
-			if contact.PushName != "" {
-				return contact.PushName
-			}
-		}
-	}
-	return sm.db.GetIdName(jid.String())
+	_, name, _ := sm.contactNames(jid)
+	return name
 }
-
 func (sm *SessionManager) disconnect() error {
 	if sm.client != nil && sm.client.IsConnected() {
 		sm.client.Disconnect()
@@ -592,20 +549,47 @@ func (sm *SessionManager) logout() error {
 		sm.uiHandler.PrintText("Already logged out")
 		return nil
 	}
-
-	if sm.client.Store != nil && sm.client.Store.ID != nil {
-		if err := sm.client.Logout(context.Background()); err != nil && !errors.Is(err, whatsmeow.ErrNotConnected) {
-			sm.uiHandler.PrintText("Warning: Couldn't fully log out: " + err.Error())
-		}
+	if err := sm.removeSession(true); err != nil {
+		return err
 	}
-	sm.client = nil
-	sm.container = nil
-	sm.removeCacheStore()
-	sm.StatusChannel <- StatusMsg{false, nil}
 	sm.uiHandler.PrintText("Successfully logged out")
 	return nil
 }
 
+// removeSession disconnects and removes everything that belongs to the linked
+// account: the login, the cache database and the saved chats. With unlink, it
+// also removes whatscli from the linked devices on the phone.
+func (sm *SessionManager) removeSession(unlink bool) error {
+	ctx := context.Background()
+	if sm.client != nil {
+		if unlink && sm.client.Store.ID != nil && sm.client.IsConnected() {
+			if err := sm.client.Logout(ctx); err != nil {
+				sm.uiHandler.PrintText("Warning: couldn't unlink from the phone, remove whatscli under Linked devices there: " + err.Error())
+			}
+		}
+		sm.client.Disconnect()
+		// logging out removed it already, a device that was never linked has nothing to remove
+		if sm.client.Store.ID != nil {
+			if err := sm.client.Store.Delete(ctx); err != nil {
+				return fmt.Errorf("failed to remove login: %v", err)
+			}
+		}
+	}
+	if sm.container != nil {
+		sm.container.Close()
+	}
+	sm.client = nil
+	sm.container = nil
+	sm.removeCacheStore()
+	if err := sm.db.Reset(); err != nil {
+		sm.uiHandler.PrintText("Warning: couldn't remove saved chats: " + err.Error())
+	}
+	sm.resetHistoryRequests()
+	sm.currentReceiver = ""
+	sm.uiHandler.SetChats(sm.db.GetChatIds())
+	sm.StatusChannel <- StatusMsg{false, nil}
+	return nil
+}
 func (sm *SessionManager) execCommand(command Command) {
 	switch command.Name {
 	default:
@@ -704,28 +688,15 @@ func (sm *SessionManager) loadBacklog() {
 }
 
 func (sm *SessionManager) resetSession() {
-	if sm.client != nil {
-		if sm.client.IsConnected() {
-			sm.client.Disconnect()
-		}
-		if sm.client.Store != nil {
-			if err := sm.client.Store.Delete(context.Background()); err != nil {
-				sm.uiHandler.PrintText("Warning: Couldn't remove session: " + err.Error())
-			}
-		}
+	if err := sm.removeSession(false); err != nil {
+		sm.uiHandler.PrintText("Warning: Couldn't remove session: " + err.Error())
 	}
-
-	sm.client = nil
-	sm.container = nil
-	sm.removeCacheStore()
 	dbPath := config.GetSessionFilePath() + ".db"
 	if err := os.Remove(dbPath); err != nil && !os.IsNotExist(err) {
 		sm.uiHandler.PrintText("Warning: Couldn't remove database file: " + err.Error())
 	}
-	sm.StatusChannel <- StatusMsg{false, nil}
 	sm.uiHandler.PrintText("Session reset. Use /connect to reconnect with a new QR code.")
 }
-
 func (sm *SessionManager) markCurrentChatRead() {
 	if sm.currentReceiver == "" {
 		sm.printCommandUsage("read", "-> only works in a chat")
@@ -930,7 +901,17 @@ func (sm *SessionManager) reactionInfo(messageID string) string {
 	if !ok || len(msg.Reactions) == 0 {
 		return ""
 	}
-	lines := make([]string, 0, len(msg.Reactions))
+	reactions := sm.namedReactions(msg)
+	for idx, reaction := range reactions {
+		reactions[idx] = "  " + tview.Escape(reaction)
+	}
+	return "\nReactions:\n" + strings.Join(reactions, "\n")
+}
+
+// namedReactions returns the reactions to a message as the emoji and the name
+// of who reacted, sorted
+func (sm *SessionManager) namedReactions(msg Message) []string {
+	reactions := make([]string, 0, len(msg.Reactions))
 	for reactor, reaction := range msg.Reactions {
 		name := "You"
 		if reactor != ReactorMe {
@@ -939,10 +920,10 @@ func (sm *SessionManager) reactionInfo(messageID string) string {
 				_, name, _ = sm.contactNames(jid)
 			}
 		}
-		lines = append(lines, "  "+reaction+" "+tview.Escape(name))
+		reactions = append(reactions, reaction+" "+name)
 	}
-	sort.Strings(lines)
-	return "\nReactions:\n" + strings.Join(lines, "\n")
+	sort.Strings(reactions)
+	return reactions
 }
 
 // reactorID returns the key of a reaction in Message.Reactions
@@ -1257,24 +1238,25 @@ func (eh *eventHandler) Handle(evt interface{}) {
 	case *events.HistorySync:
 		eh.handleHistorySync(v)
 	case *events.OfflineSyncCompleted:
-		signal(eh.sm.OfflineSynced)
+		signal(eh.sm.OfflineSynced, struct{}{})
 	case *events.AppStateSyncComplete:
-		// full syncs don't refresh the chat list per event, and may bring in contact names
-		eh.sm.addContactChats()
-		eh.sm.refreshContactNames()
+		// full syncs don't refresh the chat list per event, see refreshChats
+		if v.Name == appstate.WAPatchCriticalUnblockLow { // the contact list
+			eh.sm.addContactChats()
+			eh.sm.refreshContactNames()
+		}
 		eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
 		if cs := eh.sm.getChatSync(); cs != nil {
 			cs.onAppStateSynced(v.Name)
 		}
 	case *events.DeleteChat:
+		eh.sm.logAppState("delete", v.JID, v.Timestamp, v.FromFullSync, "", v.Action.GetMessageRange())
 		deletedAt := rangeTimestamp(v.Action.GetMessageRange())
 		if deletedAt <= 0 {
 			deletedAt = v.Timestamp.Unix()
 		}
 		eh.sm.db.SetChatDeleted(eh.sm.chatIdForJID(v.JID), deletedAt)
-		if !v.FromFullSync {
-			eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
-		}
+		eh.sm.refreshChats(v.FromFullSync)
 	case *events.PairSuccess:
 		// pairing sets up the device store, move the cached parts again
 		if err := eh.sm.useCacheStore(eh.sm.client.Store); err != nil {
@@ -1288,19 +1270,16 @@ func (eh *eventHandler) Handle(evt interface{}) {
 		eh.sm.db.SetChatArchived(eh.sm.chatIdForJID(v.JID), v.Action.GetArchived(), rangeTimestamp(v.Action.GetMessageRange()))
 		eh.sm.updateChatActivity(v.JID, v.Action.GetMessageRange(), v.FromFullSync)
 	case *events.UnarchiveChatsSetting:
+		eh.sm.logAppState("unarchive setting", types.EmptyJID, v.Timestamp, v.FromFullSync, fmt.Sprintf("unarchive=%v", v.Action.GetUnarchiveChats()), nil)
 		eh.sm.db.SetKeepArchived(!v.Action.GetUnarchiveChats())
-		if !v.FromFullSync {
-			eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
-		}
+		eh.sm.refreshChats(v.FromFullSync)
 	case *events.PushNameSetting:
 		eh.sm.nameOwnChat(v.Action.GetName())
 		eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
 	case *events.Pin:
 		eh.sm.logAppState("pin", v.JID, v.Timestamp, v.FromFullSync, fmt.Sprintf("pinned=%v", v.Action.GetPinned()), nil)
 		eh.sm.db.SetChatPinned(eh.sm.chatIdForJID(v.JID), v.Action.GetPinned(), v.Timestamp.Unix())
-		if !v.FromFullSync {
-			eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
-		}
+		eh.sm.refreshChats(v.FromFullSync)
 	case *events.Connected:
 		eh.sm.StatusChannel <- StatusMsg{true, nil}
 	case *events.Disconnected:
@@ -1355,23 +1334,15 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 	}
 
 	for _, mapping := range evt.Data.GetPhoneNumberToLidMappings() {
-		lid, lidErr := types.ParseJID(mapping.GetLidJID())
-		pn, pnErr := types.ParseJID(mapping.GetPnJID())
-		if lidErr == nil && pnErr == nil {
-			eh.sm.learnLID(lid, pn)
-		}
+		eh.sm.learnLID(mapping.GetLidJID(), mapping.GetPnJID())
 	}
 
 	var chatIDs []string
 	messageCount := 0
 	for _, conv := range evt.Data.GetConversations() {
-		for _, pair := range [][2]string{{conv.GetID(), conv.GetPnJID()}, {conv.GetLidJID(), conv.GetID()}} {
-			lid, lidErr := types.ParseJID(pair[0])
-			pn, pnErr := types.ParseJID(pair[1])
-			if lidErr == nil && pnErr == nil {
-				eh.sm.learnLID(lid, pn)
-			}
-		}
+		// a conversation has either a LID with its phone number, or the other way around
+		eh.sm.learnLID(conv.GetID(), conv.GetPnJID())
+		eh.sm.learnLID(conv.GetLidJID(), conv.GetID())
 		chatID := conv.GetID()
 		if chatID == "" {
 			chatID = conv.GetNewJID()
@@ -1432,9 +1403,6 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 			}
 			// the LID of the chat may not be mapped to its phone number yet
 			msg.ChatId = chatID
-			if evt.Data.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND && eh.sm.Log != nil {
-				eh.sm.Log.Debugf("Received message %s of %s from %s", msg.Id, chatID, formatTimestamp(int64(msg.Timestamp)))
-			}
 			eh.sm.db.AddMessage(msg, false)
 			messageCount++
 			for _, reaction := range webMsg.GetReactions() {
@@ -1467,8 +1435,19 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 		cs.onHistory(evt.Data, chatIDs, messageCount)
 	}
 	if evt.Data.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND {
+		// an answer without messages doesn't say for which chat
+		if len(chatIDs) == 0 {
+			eh.sm.finishAllHistoryRequests()
+		}
 		for _, chatID := range chatIDs {
 			eh.sm.finishHistoryRequest(chatID)
+		}
+		sent := 0
+		for _, conv := range evt.Data.GetConversations() {
+			sent += len(conv.GetMessages())
+		}
+		if sent == 0 {
+			eh.sm.uiHandler.PrintText("Your phone has no older messages")
 		}
 	}
 }
@@ -1594,9 +1573,7 @@ func (sm *SessionManager) contactNames(jid types.JID) (string, string, string) {
 			if err != nil || !contact.Found {
 				continue
 			}
-			name := firstNonEmpty(contact.FullName, contact.FirstName, contact.PushName, contact.BusinessName)
-			short := firstNonEmpty(contact.FirstName, contact.FullName, contact.PushName, contact.BusinessName)
-			if name != "" {
+			if name, short := contactDisplayNames(contact); name != "" {
 				return id, name, short
 			}
 		}
@@ -1615,6 +1592,14 @@ func (sm *SessionManager) refreshContactNames() {
 		id, name, short := sm.contactNames(jid)
 		return id, name, short, true
 	})
+}
+
+// contactDisplayNames returns the name and short name to show for a contact.
+// Like the phone, it prefers the name saved in the contacts over the profile name.
+func contactDisplayNames(contact types.ContactInfo) (string, string) {
+	name := firstNonEmpty(contact.FullName, contact.FirstName, contact.PushName, contact.BusinessName)
+	short := firstNonEmpty(contact.FirstName, contact.FullName, contact.PushName, contact.BusinessName)
+	return name, short
 }
 
 func firstNonEmpty(values ...string) string {

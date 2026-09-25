@@ -1,7 +1,6 @@
 package messages
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -35,31 +34,11 @@ type chatSync struct {
 // database and the saved chats first, so that everything comes from the phone.
 func (sm *SessionManager) relink() {
 	sm.uiHandler.PrintText("[1/3] Unlinking whatscli and removing its stored data...")
-	ctx := context.Background()
-	if sm.client != nil {
-		if sm.client.Store.ID != nil && sm.client.IsConnected() {
-			if err := sm.client.Logout(ctx); err != nil {
-				sm.uiHandler.PrintText("Warning: couldn't unlink from the phone, remove the old whatscli under Linked devices there: " + err.Error())
-			}
-		}
-		sm.client.Disconnect()
-		if err := sm.client.Store.Delete(ctx); err != nil {
-			sm.uiHandler.PrintError(fmt.Errorf("failed to remove login: %v", err))
-			return
-		}
+	// the old login would be used again if it stays
+	if err := sm.removeSession(true); err != nil {
+		sm.uiHandler.PrintError(err)
+		return
 	}
-	if sm.container != nil {
-		sm.container.Close()
-	}
-	sm.client = nil
-	sm.container = nil
-	sm.removeCacheStore()
-	if err := sm.db.Reset(); err != nil {
-		sm.uiHandler.PrintText("Warning: couldn't remove saved chats: " + err.Error())
-	}
-	sm.currentReceiver = ""
-	sm.uiHandler.SetChats(sm.db.GetChatIds())
-	sm.StatusChannel <- StatusMsg{false, nil}
 
 	sm.setChatSync(&chatSync{
 		sm:           sm,
@@ -143,11 +122,16 @@ func (cs *chatSync) resetIdleTimerLocked() {
 	if cs.idleTimer != nil {
 		cs.idleTimer.Stop()
 	}
-	cs.idleTimer = time.AfterFunc(syncIdleTimeout, func() {
+	var timer *time.Timer
+	timer = time.AfterFunc(syncIdleTimeout, func() {
 		cs.lock.Lock()
 		defer cs.lock.Unlock()
-		cs.finishLocked()
+		// data may have arrived and replaced the timer while this waited for the lock
+		if cs.idleTimer == timer {
+			cs.finishLocked()
+		}
 	})
+	cs.idleTimer = timer
 }
 
 func (cs *chatSync) finishLocked() {
@@ -164,7 +148,7 @@ func (cs *chatSync) finishLocked() {
 	for _, chat := range cs.sm.db.GetChatIds() {
 		if chat.Hidden {
 			continue
-		} else if chat.Archived {
+		} else if chat.InArchive {
 			archived++
 		} else {
 			shown++

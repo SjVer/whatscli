@@ -102,6 +102,7 @@ type Chat struct {
 	Pinned      bool
 	// time when the chat was pinned, the last pinned chat is listed first
 	PinnedAt int64
+	// whether the chat was archived on the phone, see InArchive
 	Archived bool
 	// time of the last message that wasn't sent by the user
 	LastIncoming int64
@@ -115,6 +116,8 @@ type Chat struct {
 	// set by GetChatIds for chats that WhatsApp doesn't list: chats without
 	// messages, e.g. contacts that were never written to, or deleted chats
 	Hidden bool `json:"-"`
+	// set by GetChatIds for chats that are still archived, see GetChatIds
+	InArchive bool `json:"-"`
 }
 
 type Contact struct {

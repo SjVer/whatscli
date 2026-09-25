@@ -1,8 +1,6 @@
 package messages
 
 import (
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -128,7 +126,7 @@ func TestGetChatIdsArchivedHiddenAndOrder(t *testing.T) {
 	var order []string
 	for _, chat := range chats {
 		byId[chat.Id] = chat
-		if !chat.Hidden && !chat.Archived {
+		if !chat.Hidden && !chat.InArchive {
 			order = append(order, chat.Id)
 		}
 	}
@@ -142,10 +140,10 @@ func TestGetChatIdsArchivedHiddenAndOrder(t *testing.T) {
 			t.Fatalf("expected shown chats %v, got %v", expected, order)
 		}
 	}
-	if !byId["archived@s.whatsapp.net"].Archived {
+	if !byId["archived@s.whatsapp.net"].InArchive {
 		t.Fatal("expected chat without messages since archiving to stay archived")
 	}
-	if !byId["replied@s.whatsapp.net"].Archived {
+	if !byId["replied@s.whatsapp.net"].InArchive {
 		t.Fatal("expected chat with only own messages since archiving to stay archived")
 	}
 	if !byId["contact@s.whatsapp.net"].Hidden || !byId["deleted@s.whatsapp.net"].Hidden {
@@ -163,7 +161,7 @@ func TestGetChatIdsArchivedHiddenAndOrder(t *testing.T) {
 	// with "keep chats archived", new messages don't unarchive
 	db.SetKeepArchived(true)
 	for _, chat := range db.GetChatIds() {
-		if chat.Id == "unarchived@s.whatsapp.net" && !chat.Archived {
+		if chat.Id == "unarchived@s.whatsapp.net" && !chat.InArchive {
 			t.Fatal("expected chat to stay archived with keep chats archived")
 		}
 	}
@@ -181,7 +179,7 @@ func TestSetChatUnarchivedOverridesOlderArchiveRecords(t *testing.T) {
 	db.UpdateChatLastMessage("pap@s.whatsapp.net", 200)
 
 	for _, chat := range db.GetChatIds() {
-		if chat.Id == "pap@s.whatsapp.net" && chat.Archived {
+		if chat.Id == "pap@s.whatsapp.net" && chat.InArchive {
 			t.Fatal("expected chat that the phone lists as not archived to stay unarchived")
 		}
 	}
@@ -244,30 +242,6 @@ func TestNewestMessagesAreSavedAndLoaded(t *testing.T) {
 	}
 }
 
-func TestLoadChatsReadsNewestMessageOfEarlierVersions(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "chats.json")
-	raw, _ := proto.Marshal(&waProto.Message{Conversation: proto.String("hi")})
-	saved, _ := json.Marshal([]map[string]any{{
-		"Id":          "123@s.whatsapp.net",
-		"LastMessage": 200,
-		"Newest":      Message{Id: "new", ChatId: "123@s.whatsapp.net", Timestamp: 200, Text: "hi"},
-		"NewestRaw":   raw,
-	}})
-	if err := os.WriteFile(path, saved, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	db := &MessageDatabase{}
-	db.Init()
-	if err := db.LoadChats(path, 10); err != nil {
-		t.Fatal(err)
-	}
-	msgs := db.GetMessages("123@s.whatsapp.net")
-	if len(msgs) != 1 || msgs[0].Id != "new" || msgs[0].RawMessage.GetConversation() != "hi" {
-		t.Fatalf("expected the newest message saved by an earlier version, got %+v", msgs)
-	}
-}
-
 func TestSetReaction(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "chats.json")
 	db := &MessageDatabase{}
@@ -307,5 +281,26 @@ func TestReactionToMessageLoadedLater(t *testing.T) {
 	db.AddMessage(Message{Id: "old", ChatId: "123@s.whatsapp.net", Timestamp: 100}, false)
 	if msg, _ := db.GetMessage("old"); msg.Reactions["456@s.whatsapp.net"] != "👍" {
 		t.Fatalf("expected the reaction to be added when the message is loaded, got %v", msg.Reactions)
+	}
+}
+
+func TestUpdateContactNamesLooksUpEachSenderOnce(t *testing.T) {
+	db := &MessageDatabase{}
+	db.Init()
+	db.AddMessage(Message{Id: "m1", ChatId: "group@g.us", ContactId: "456@lid", Timestamp: 100}, false)
+	db.AddMessage(Message{Id: "m2", ChatId: "group@g.us", ContactId: "456@lid", Timestamp: 200}, false)
+
+	lookups := 0
+	db.UpdateContactNames(func(contactID string) (string, string, string, bool) {
+		lookups++
+		return "123@s.whatsapp.net", "Mam Full", "Mam", true
+	})
+	if lookups != 1 {
+		t.Fatalf("expected one lookup for the sender of both messages, got %d", lookups)
+	}
+	for _, msg := range db.GetMessages("group@g.us") {
+		if msg.ContactId != "123@s.whatsapp.net" || msg.ContactName != "Mam Full" || msg.ContactShort != "Mam" {
+			t.Fatalf("expected the names to be updated, got %+v", msg)
+		}
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -16,20 +15,11 @@ import (
 // Dump writes the chat list as whatscli shows it, with the data it is based on,
 // and all unread messages. Used by the -dump command line option for debugging.
 func (sm *SessionManager) Dump(w io.Writer) {
-	sm.db.chatLock.RLock()
-	keepArchived := sm.db.keepArchived
-	stored := make(map[string]Chat, len(sm.db.chats))
-	for id, chat := range sm.db.chats {
-		stored[id] = chat
-	}
-	sm.db.chatLock.RUnlock()
-
-	// GetChatIds sets Archived to whether the chat is still archived
 	var shown, archived, hidden []Chat
 	for _, chat := range sm.db.GetChatIds() {
 		if chat.Hidden {
 			hidden = append(hidden, chat)
-		} else if chat.Archived {
+		} else if chat.InArchive {
 			archived = append(archived, chat)
 		} else {
 			shown = append(shown, chat)
@@ -38,12 +28,12 @@ func (sm *SessionManager) Dump(w io.Writer) {
 
 	connected := sm.client != nil && sm.client.IsConnected()
 	fmt.Fprintf(w, "connected: %v\n", connected)
-	fmt.Fprintf(w, "keep chats archived: %v\n", keepArchived)
+	fmt.Fprintf(w, "keep chats archived: %v\n", sm.db.KeepArchived())
 	fmt.Fprintf(w, "chats: %d shown, %d archived, %d hidden\n", len(shown), len(archived), len(hidden))
 
-	sm.dumpChats(w, "CHATS", shown, stored)
-	sm.dumpChats(w, "ARCHIVED", archived, stored)
-	sm.dumpChats(w, "HIDDEN", hidden, stored)
+	sm.dumpChats(w, "CHATS", shown)
+	sm.dumpChats(w, "ARCHIVED", archived)
+	sm.dumpChats(w, "HIDDEN", hidden)
 	sm.dumpUnread(w, append(shown, archived...))
 
 	sm.appStateLogLock.Lock()
@@ -80,29 +70,23 @@ func (sm *SessionManager) DumpChat(w io.Writer, chatID string) {
 		}
 		fmt.Fprintf(w, "%s %s: %s\n", formatTimestamp(int64(msg.Timestamp)), sender, strings.ReplaceAll(msg.Text, "\n", " "))
 		if len(msg.Reactions) > 0 {
-			reactions := make([]string, 0, len(msg.Reactions))
-			for reactor, reaction := range msg.Reactions {
-				reactions = append(reactions, reaction+" "+sm.db.GetIdShort(reactor))
-			}
-			sort.Strings(reactions)
-			fmt.Fprintf(w, "  reactions: %s\n", strings.Join(reactions, ", "))
+			fmt.Fprintf(w, "  reactions: %s\n", strings.Join(sm.namedReactions(msg), ", "))
 		}
 	}
 }
 
-func (sm *SessionManager) dumpChats(w io.Writer, title string, chats []Chat, stored map[string]Chat) {
+func (sm *SessionManager) dumpChats(w io.Writer, title string, chats []Chat) {
 	fmt.Fprintf(w, "\n=== %s (%d) ===\n", title, len(chats))
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "#\tLAST MESSAGE\tLAST INCOMING\tPIN\tARCHIVED\tARCHIVED AT\tDELETED AT\tUNREAD\tMSGS\tID\tNAME\tWHATSMEOW SETTINGS")
 	for idx, chat := range chats {
-		raw := stored[chat.Id]
 		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n",
 			idx+1,
 			formatTimestamp(chat.LastMessage),
 			formatTimestamp(chat.LastIncoming),
 			yesNo(chat.Pinned),
-			yesNo(raw.Archived),
-			formatTimestamp(raw.ArchivedAt),
+			yesNo(chat.Archived),
+			formatTimestamp(chat.ArchivedAt),
 			formatTimestamp(chat.DeletedAt),
 			chat.Unread,
 			len(sm.db.GetMessages(chat.Id)),
@@ -146,7 +130,7 @@ func (sm *SessionManager) whatsmeowChatSettings(chatID string) string {
 	}
 	ctx := context.Background()
 	jids := []types.JID{jid}
-	if jid.Server == types.DefaultUserServer {
+	if jid.Server == types.DefaultUserServer && sm.client.Store.LIDs != nil {
 		if lid, err := sm.client.Store.LIDs.GetLIDForPN(ctx, jid); err == nil && !lid.IsEmpty() {
 			jids = append(jids, lid)
 		}

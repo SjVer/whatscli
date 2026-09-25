@@ -34,7 +34,7 @@ var topBar *tview.TextView
 var infoBar *tview.TextView
 
 var chatRoot *tview.TreeNode
-var archivedExpanded bool = false
+var archivedExpanded bool
 
 // all chats as last set by the session manager, and the text the chat list is filtered by
 var allChats []messages.Chat
@@ -166,6 +166,8 @@ func main() {
 	}
 	LoadShortcuts()
 	app.Run()
+	// saves changes of the last second too
+	sessionManager.Close()
 }
 
 // colors an entry of the chat list, on the configured background
@@ -185,14 +187,10 @@ func MakeTree() *tview.TreeView {
 
 	// If a chat was selected, open it.
 	treeView.SetChangedFunc(func(node *tview.TreeNode) {
-		reference := node.GetReference()
-		if reference == nil {
-			SetDisplayedChat(messages.Chat{})
-			return // Selecting the root node does nothing.
-		}
-		if recv, ok := reference.(messages.Chat); ok {
-			SetDisplayedChat(recv)
-		}
+		// the root and the archived chats folder show no chat, so that
+		// collapsing the folder isn't undone for the open archived chat
+		recv, _ := node.GetReference().(messages.Chat)
+		SetDisplayedChat(recv)
 	})
 	// Collapse or expand the archived chats folder when it is selected.
 	treeView.SetSelectedFunc(func(node *tview.TreeNode) {
@@ -964,14 +962,24 @@ func chatMatches(chat messages.Chat, search string) bool {
 	return strings.Contains(strings.ToLower(chat.Name), search) || strings.Contains(strings.Split(chat.Id, "@")[0], search)
 }
 
+// the search compiled for highlighting, compiled again when the search changes
+var searchPattern struct {
+	search  string
+	pattern *regexp.Regexp
+}
+
 // highlightSearch escapes text for the message panel, and highlights where it contains the search
 func highlightSearch(text string, search string) string {
 	if search == "" {
 		return tview.Escape(text)
 	}
+	if searchPattern.pattern == nil || searchPattern.search != search {
+		searchPattern.search = search
+		searchPattern.pattern = regexp.MustCompile("(?i)" + regexp.QuoteMeta(search))
+	}
 	out := ""
 	last := 0
-	for _, match := range regexp.MustCompile("(?i)"+regexp.QuoteMeta(search)).FindAllStringIndex(text, -1) {
+	for _, match := range searchPattern.pattern.FindAllStringIndex(text, -1) {
 		out += tview.Escape(text[last:match[0]]) + "[black:yellow]" + tview.Escape(text[match[0]:match[1]]) + "[-:-]"
 		last = match[1]
 	}
@@ -1030,16 +1038,16 @@ func renderChats() {
 		if element.Id == oldId {
 			currentReceiver = element
 		}
-		if element.Archived && chatSearch == "" {
+		if element.InArchive && chatSearch == "" {
 			archivedNode.AddChild(node)
 		} else {
-			if element.Archived {
+			if element.InArchive {
 				node.SetText(name + " [::d](archived)[::-]")
 			}
 			chatRoot.AddChild(node)
 		}
 		if element.Id == currentReceiver.Id {
-			if element.Archived {
+			if element.InArchive {
 				archivedExpanded = true
 				archivedNode.SetExpanded(true)
 			}
