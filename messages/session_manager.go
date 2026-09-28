@@ -24,6 +24,7 @@ import (
 	"github.com/rivo/tview"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
@@ -82,6 +83,9 @@ type SessionManager struct {
 	lastReceived atomic.Int64
 	// notifies when the connection is lost
 	connection connectionWatch
+	// how many messages that arrived while whatscli was closed are being delivered,
+	// 0 when they were, see startOfflineSync
+	offlineMessages atomic.Int64
 	// pictures of chats shown on notifications
 	pictures chatPictures
 	// app state collections that were asked from the phone, see recoverAppState
@@ -196,7 +200,7 @@ func (sm *SessionManager) setCurrentReceiver(id string) {
 func (sm *SessionManager) getConnection() (*whatsmeow.Client, error) {
 	if sm.client == nil {
 		dbPath := config.GetSessionFilePath() + ".db"
-		container, err := sqlstore.New(context.Background(), "sqlite3", "file:"+dbPath+"?_foreign_keys=on", waLog.Noop)
+		container, err := sqlstore.New(context.Background(), "sqlite3", "file:"+dbPath+"?_foreign_keys=on"+sqliteOptions, waLog.Noop)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to database: %v", err)
 		}
@@ -232,12 +236,12 @@ func (sm *SessionManager) useCacheStore(device *store.Device) error {
 		// whatsmeow only creates the tables with foreign keys enabled, but the
 		// device row they reference is in the session database, so reopen without
 		cachePath := "file:" + config.GetSessionFilePath() + ".cache.db"
-		upgraded, err := sqlstore.New(context.Background(), "sqlite3", cachePath+"?_foreign_keys=on", waLog.Noop)
+		upgraded, err := sqlstore.New(context.Background(), "sqlite3", cachePath+"?_foreign_keys=on"+sqliteOptions, waLog.Noop)
 		if err != nil {
 			return fmt.Errorf("failed to open cache database: %v", err)
 		}
 		upgraded.Close()
-		db, err := sql.Open("sqlite3", cachePath+"?_foreign_keys=off")
+		db, err := sql.Open("sqlite3", cachePath+"?_foreign_keys=off"+sqliteOptions)
 		if err != nil {
 			return fmt.Errorf("failed to open cache database: %v", err)
 		}
@@ -265,13 +269,29 @@ func (sm *SessionManager) useCacheStore(device *store.Device) error {
 	return nil
 }
 
+// sqliteOptions make writing to the databases faster: whatsmeow writes the keys
+// of each message received, which takes long after being offline for a while
+// when every write waits for the disk. With a write-ahead log, a crash of the
+// computer can lose the last writes, but doesn't damage the database.
+const sqliteOptions = "&_journal_mode=WAL&_synchronous=NORMAL"
+
+// removeDatabase deletes an SQLite database with its write-ahead log.
+func removeDatabase(path string) error {
+	for _, file := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // removeCacheStore closes and deletes the cache database.
 func (sm *SessionManager) removeCacheStore() {
 	if sm.cacheContainer != nil {
 		sm.cacheContainer.Close()
 		sm.cacheContainer = nil
 	}
-	if err := os.Remove(config.GetSessionFilePath() + ".cache.db"); err != nil && !os.IsNotExist(err) {
+	if err := removeDatabase(config.GetSessionFilePath() + ".cache.db"); err != nil {
 		sm.uiHandler.PrintText("Warning: Couldn't remove cache database: " + err.Error())
 	}
 }
@@ -721,8 +741,7 @@ func (sm *SessionManager) resetSession() {
 	if err := sm.removeSession(false); err != nil {
 		sm.uiHandler.PrintText("Warning: Couldn't remove session: " + err.Error())
 	}
-	dbPath := config.GetSessionFilePath() + ".db"
-	if err := os.Remove(dbPath); err != nil && !os.IsNotExist(err) {
+	if err := removeDatabase(config.GetSessionFilePath() + ".db"); err != nil {
 		sm.uiHandler.PrintText("Warning: Couldn't remove database file: " + err.Error())
 	}
 	sm.uiHandler.PrintText("Session reset. Use /connect to reconnect with a new QR code.")
@@ -801,6 +820,10 @@ func (sm *SessionManager) setCurrentChatArchived(archive bool) {
 	}
 	sm.uiHandler.SetChats(sm.db.GetChatIds())
 	sm.uiHandler.PrintText(done + " " + sm.db.GetIdName(chatID))
+	if archive {
+		// like on the phone, an archived chat is left
+		sm.uiHandler.CloseChat(chatID)
+	}
 }
 
 // sendAppState sends a change of chat settings to the phone. When the phone
@@ -1398,8 +1421,16 @@ func (eh *eventHandler) Handle(evt interface{}) {
 		eh.handleLiveMessage(v)
 	case *events.HistorySync:
 		eh.handleHistorySync(v)
+	case *events.OfflineSyncPreview:
+		eh.sm.startOfflineSync(v.Messages)
+		if v.Total > 0 {
+			go eh.sm.requestOfflineBatches()
+		}
 	case *events.OfflineSyncCompleted:
+		eh.sm.finishOfflineSync()
 		signal(eh.sm.OfflineSynced, struct{}{})
+	case *events.Receipt:
+		eh.handleReceipt(v)
 	case *events.AppStateSyncComplete:
 		// full syncs don't refresh the chat list per event, see refreshChats
 		if v.Name == appstate.WAPatchCriticalUnblockLow { // the contact list
@@ -1428,6 +1459,13 @@ func (eh *eventHandler) Handle(evt interface{}) {
 		}
 	case *events.MarkChatAsRead:
 		eh.sm.logAppState("read", v.JID, v.Timestamp, v.FromFullSync, fmt.Sprintf("read=%v", v.Action.GetRead()), v.Action.GetMessageRange())
+		if v.Action.GetRead() {
+			readUntil := rangeTimestamp(v.Action.GetMessageRange())
+			if readUntil <= 0 {
+				readUntil = v.Timestamp.Unix()
+			}
+			eh.sm.db.MarkChatReadUntil(eh.sm.chatIdForJID(v.JID), readUntil)
+		}
 		eh.sm.updateChatActivity(v.JID, v.Action.GetMessageRange(), v.FromFullSync)
 	case *events.Archive:
 		eh.sm.logAppState("archive", v.JID, v.Timestamp, v.FromFullSync, fmt.Sprintf("archived=%v", v.Action.GetArchived()), v.Action.GetMessageRange())
@@ -1448,6 +1486,7 @@ func (eh *eventHandler) Handle(evt interface{}) {
 		eh.sm.StatusChannel <- StatusMsg{true, nil}
 		eh.sm.connection.connected()
 	case *events.Disconnected:
+		eh.sm.finishOfflineSync()
 		eh.sm.StatusChannel <- StatusMsg{false, nil}
 		eh.sm.connection.disconnected()
 	case *events.KeepAliveTimeout:
@@ -1461,23 +1500,89 @@ func (eh *eventHandler) Handle(evt interface{}) {
 	}
 }
 
+// startOfflineSync is called when WhatsApp starts delivering the messages that
+// arrived while whatscli was closed. They are only shown when all arrived, see
+// finishOfflineSync, as there can be thousands after a while, most of them read
+// on the phone already, see handleReceipt.
+func (sm *SessionManager) startOfflineSync(messages int) {
+	if messages > 0 {
+		sm.offlineMessages.Store(int64(messages))
+		sm.updateActivity()
+	}
+}
+
+// offlineBatchSize is how many of the events that arrived while whatscli was
+// closed WhatsApp sends at a time, like other WhatsApp Web clients ask for
+const offlineBatchSize = 100
+
+// requestOfflineBatches asks WhatsApp to send the events that arrived while
+// whatscli was closed in batches, instead of one at a time as it does unasked,
+// which takes minutes after a while.
+func (sm *SessionManager) requestOfflineBatches() {
+	err := sm.client.DangerousInternals().SendNode(context.Background(), waBinary.Node{
+		Tag:     "ib",
+		Content: []waBinary.Node{{Tag: "offline_batch", Attrs: waBinary.Attrs{"count": fmt.Sprint(offlineBatchSize)}}},
+	})
+	if err != nil && sm.Log != nil {
+		sm.Log.Warnf("Failed to request the offline messages in batches: %v", err)
+	}
+}
+
+// finishOfflineSync shows the messages that arrived while whatscli was closed.
+func (sm *SessionManager) finishOfflineSync() {
+	if sm.offlineMessages.Swap(0) == 0 {
+		return
+	}
+	sm.updateActivity()
+	sm.uiHandler.SetChats(sm.db.GetChatIds())
+	if sm.currentReceiver != "" {
+		sm.uiHandler.NewScreen(sm.getMessages(sm.currentReceiver))
+	}
+}
+
+// handleReceipt marks the messages of a chat as read when they were read on the
+// phone or another device.
+func (eh *eventHandler) handleReceipt(evt *events.Receipt) {
+	if !evt.IsFromMe || (evt.Type != types.ReceiptTypeRead && evt.Type != types.ReceiptTypeReadSelf) {
+		return
+	}
+	// reading a message reads the ones before it
+	readUntil := int64(0)
+	for _, id := range evt.MessageIDs {
+		if msg, ok := eh.sm.db.GetMessage(id); ok {
+			readUntil = max(readUntil, int64(msg.Timestamp))
+		}
+	}
+	if readUntil == 0 {
+		// the messages weren't received yet, but were sent before they were read
+		readUntil = evt.Timestamp.Unix()
+	}
+	if eh.sm.db.MarkChatReadUntil(eh.sm.chatIdForJID(evt.Chat), readUntil) && eh.sm.offlineMessages.Load() == 0 {
+		eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
+	}
+}
+
 func (eh *eventHandler) handleLiveMessage(evt *events.Message) {
 	msg, action, ok := eh.normalizeEventMessage(evt)
 	if !ok {
 		return
 	}
+	// messages that arrived while whatscli was closed are shown when all arrived
+	show := eh.sm.offlineMessages.Load() == 0
 
 	switch action {
 	case "react":
-		if chatID, ok := eh.sm.db.SetReaction(msg.Id, msg.SenderId, msg.Text, int64(msg.Timestamp)); ok && chatID == eh.sm.currentReceiver {
+		if chatID, ok := eh.sm.db.SetReaction(msg.Id, msg.SenderId, msg.Text, int64(msg.Timestamp)); ok && chatID == eh.sm.currentReceiver && show {
 			eh.sm.uiHandler.NewScreen(eh.sm.getMessages(chatID))
 		}
 		return
 	case "revoke":
-		if eh.sm.db.MarkMessageRevoked(msg.Id) && eh.sm.currentReceiver == msg.ChatId {
+		if eh.sm.db.MarkMessageRevoked(msg.Id) && eh.sm.currentReceiver == msg.ChatId && show {
 			eh.sm.uiHandler.NewScreen(eh.sm.getMessages(msg.ChatId))
 		}
-		eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
+		if show {
+			eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
+		}
 		return
 	case "ignore":
 		return
@@ -1485,13 +1590,17 @@ func (eh *eventHandler) handleLiveMessage(evt *events.Message) {
 
 	markUnread := !msg.FromMe && msg.ChatId != eh.sm.currentReceiver
 	isNew := eh.sm.db.AddMessage(msg, markUnread)
+	if stored, ok := eh.sm.db.GetMessage(msg.Id); ok {
+		// it may have been read on the phone already
+		markUnread = markUnread && stored.Unread
+	}
 	if msg.ChatId == eh.sm.currentReceiver {
-		if isNew {
+		if show && isNew {
 			eh.sm.uiHandler.NewMessage(msg)
-		} else {
+		} else if show {
 			eh.sm.uiHandler.NewScreen(eh.sm.getMessages(msg.ChatId))
 		}
-	} else if markUnread && msg.Timestamp > uint64(time.Now().Unix()-30) {
+	} else if markUnread && isNew && msg.Timestamp > uint64(time.Now().Unix()-30) {
 		// showing it can take a moment, e.g. on Windows, which starts PowerShell
 		title, text := notificationText(msg, eh.sm.db.GetIdName(msg.ChatId))
 		go func() {
@@ -1500,7 +1609,9 @@ func (eh *eventHandler) handleLiveMessage(evt *events.Message) {
 			}
 		}()
 	}
-	eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
+	if show {
+		eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
+	}
 }
 
 func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {

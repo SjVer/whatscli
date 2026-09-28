@@ -17,6 +17,8 @@ type UiMessageHandler interface {
 	SetStatus(SessionStatus)
 	// OpenFile opens a file or URL with a command, or the default app if it is empty
 	OpenFile(target string, command string)
+	// CloseChat goes back to the chat list if the chat is open
+	CloseChat(chatID string)
 	GetWriter() io.Writer
 }
 
@@ -97,6 +99,8 @@ type Chat struct {
 	Archived bool
 	// time of the last message that wasn't sent by the user
 	LastIncoming int64
+	// time until which the chat was read on the phone or another device
+	ReadUntil int64 `json:",omitempty"`
 	// time of the last message when the chat was archived
 	ArchivedAt int64
 	// time of the last message when the chat was deleted

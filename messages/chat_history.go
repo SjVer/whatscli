@@ -174,7 +174,7 @@ func (sm *SessionManager) finishHistoryRequest(chatID string) bool {
 	return ok
 }
 
-// updateActivity shows in the status bar whether messages are being loaded.
+// updateActivity shows in the status bar whether messages are being loaded or received.
 func (sm *SessionManager) updateActivity() {
 	sm.history.lock.Lock()
 	activity := ""
@@ -184,6 +184,9 @@ func (sm *SessionManager) updateActivity() {
 		activity = fmt.Sprintf("loading messages of %d chats...", count)
 	}
 	sm.history.lock.Unlock()
+	if count := sm.offlineMessages.Load(); count > 0 && activity == "" {
+		activity = fmt.Sprintf("receiving %d messages from while offline...", count)
+	}
 
 	sm.statusLock.Lock()
 	sm.statusInfo.Activity = activity

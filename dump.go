@@ -34,6 +34,7 @@ func (c consoleHandler) NewScreen(msgs []messages.Message)       {}
 func (c consoleHandler) SetChats(chats []messages.Chat)          {}
 func (c consoleHandler) SetStatus(status messages.SessionStatus) {}
 func (c consoleHandler) OpenFile(target string, command string)  {}
+func (c consoleHandler) CloseChat(chatID string)                 {}
 func (c consoleHandler) PrintError(err error) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

@@ -197,6 +197,7 @@ func (md *MessageDatabase) MergeChat(from, to string) {
 		dst.PinnedAt = src.PinnedAt
 	}
 	dst.Unread = max(dst.Unread, src.Unread)
+	dst.ReadUntil = max(dst.ReadUntil, src.ReadUntil)
 	delete(md.chats, from)
 	md.chats[to] = dst
 	md.scheduleSaveLocked()
@@ -324,14 +325,16 @@ func (md *MessageDatabase) AddMessage(msg Message, markUnread bool) bool {
 		if existing.MimeType == "" && msg.MimeType != "" {
 			existing.MimeType = msg.MimeType
 		}
-		existing.Unread = existing.Unread || markUnread
+		existing.Unread = existing.Unread || (markUnread && !md.readOnOtherDeviceLocked(existing))
+		markUnread = existing.Unread && !md.messagesById[msg.Id].Unread
 		md.messagesById[msg.Id] = existing
 		md.replaceMessageLocked(existing)
 		md.updateChatFromMessageLocked(existing, markUnread)
 		return false
 	}
 
-	msg.Unread = markUnread
+	msg.Unread = markUnread && !md.readOnOtherDeviceLocked(msg)
+	markUnread = msg.Unread
 	for reactor, pending := range md.pendingReactions[msg.Id] {
 		msg = withReaction(msg, reactor, pending.reaction, pending.at)
 	}
@@ -418,6 +421,7 @@ func (md *MessageDatabase) AddChat(chat Chat) {
 		if chat.LastIncoming < existing.LastIncoming {
 			chat.LastIncoming = existing.LastIncoming
 		}
+		chat.ReadUntil = max(chat.ReadUntil, existing.ReadUntil)
 	}
 	md.chats[chat.Id] = chat
 	md.scheduleSaveLocked()
@@ -467,6 +471,53 @@ func (md *MessageDatabase) lastIncomingMessageIDsLocked(chatID string, limit int
 		}
 	}
 	return ids
+}
+
+// readOnOtherDeviceLocked returns whether an incoming message was read on the
+// phone or another device already, see MarkChatReadUntil. Requires messageLock.
+func (md *MessageDatabase) readOnOtherDeviceLocked(msg Message) bool {
+	md.chatLock.RLock()
+	defer md.chatLock.RUnlock()
+	return int64(msg.Timestamp) <= md.chats[msg.ChatId].ReadUntil
+}
+
+// MarkChatReadUntil records that a chat was read on another device up to the
+// given time: its messages until then are no longer new, nor the ones that
+// arrive later, e.g. when they are received after being offline. Returns
+// whether that changed any.
+func (md *MessageDatabase) MarkChatReadUntil(chatID string, until int64) bool {
+	md.messageLock.Lock()
+	defer md.messageLock.Unlock()
+
+	changed := false
+	unread := 0
+	msgs := md.messages[chatID]
+	for idx, msg := range msgs {
+		if msg.Unread && int64(msg.Timestamp) <= until {
+			msg.Unread = false
+			msgs[idx] = msg
+			md.messagesById[msg.Id] = msg
+			changed = true
+		} else if msg.Unread {
+			unread++
+		}
+	}
+
+	md.chatLock.Lock()
+	defer md.chatLock.Unlock()
+	chat, ok := md.chats[chatID]
+	if !ok || until <= chat.ReadUntil && !changed {
+		return false
+	}
+	chat.ReadUntil = max(chat.ReadUntil, until)
+	// the unread count may be of messages that aren't in memory, see UpdateChatUnread
+	if changed || chat.LastMessage <= until {
+		changed = changed || chat.Unread != unread
+		chat.Unread = unread
+	}
+	md.chats[chatID] = chat
+	md.scheduleSaveLocked()
+	return changed
 }
 
 // MarkChatRead clears unread state for the given chat and returns the unread messages that were cleared.

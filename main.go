@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -584,6 +585,12 @@ func handleExitChats(ev *tcell.EventKey) *tcell.EventKey {
 		renderChats()
 		return nil
 	}
+	showChatsRoot()
+	return nil
+}
+
+// goes back to Chats, the root of the chat list, and closes the archived chats
+func showChatsRoot() {
 	archivedExpanded = false
 	for _, node := range chatRoot.GetChildren() {
 		if node.GetReference() == "archived" {
@@ -594,7 +601,6 @@ func handleExitChats(ev *tcell.EventKey) *tcell.EventKey {
 		treeView.SetCurrentNode(chatRoot)
 		SetDisplayedChat(messages.Chat{})
 	}
-	return nil
 }
 
 func handleChatPanelUp(ev *tcell.EventKey) *tcell.EventKey {
@@ -1343,10 +1349,30 @@ func highlightSearch(text string, search string) string {
 	return out + tview.Escape(text[last:])
 }
 
-// loads the chat data from storage to the TreeView
+// the chat list to show next, see SetChats
+var pendingChats struct {
+	lock   sync.Mutex
+	chats  []messages.Chat
+	queued bool
+}
+
+// loads the chat data from storage to the TreeView. The list can change many
+// times a second, e.g. while receiving messages, and is only drawn once for
+// the changes until it is drawn, with the newest list.
 func (u UiHandler) SetChats(ids []messages.Chat) {
+	pendingChats.lock.Lock()
+	pendingChats.chats = ids
+	queued := pendingChats.queued
+	pendingChats.queued = true
+	pendingChats.lock.Unlock()
+	if queued {
+		return
+	}
 	go app.QueueUpdateDraw(func() {
-		allChats = ids
+		pendingChats.lock.Lock()
+		allChats = pendingChats.chats
+		pendingChats.queued = false
+		pendingChats.lock.Unlock()
 		renderChats()
 	})
 }
@@ -1434,6 +1460,16 @@ func updateChatNode(chatID string) {
 			node.SetText(chatNodeText(chat))
 		}
 		return true
+	})
+}
+
+// CloseChat goes back to the chat list when the chat is open, e.g. after it was archived
+func (u UiHandler) CloseChat(chatID string) {
+	go app.QueueUpdateDraw(func() {
+		if currentReceiver.Id == chatID {
+			showChatsRoot()
+			app.SetFocus(treeView)
+		}
 	})
 }
 
