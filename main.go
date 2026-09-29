@@ -408,9 +408,10 @@ func greyOutUnfocusedPanel(screen tcell.Screen) {
 	for cy := y; cy < y+height; cy++ {
 		for cx := x; cx < x+width; cx++ {
 			mainc, combc, style, _ := screen.GetContent(cx, cy)
-			// unread counts keep their color, to still stand out
+			// unread counts keep their color, to still stand out. Dim text, like
+			// notices, is as grey as the rest, as it would be too dark to read.
 			if !isUnreadCount(style) {
-				screen.SetContent(cx, cy, mainc, combc, style.Foreground(tcell.ColorGray))
+				screen.SetContent(cx, cy, mainc, combc, style.Foreground(tcell.ColorGray).Dim(false))
 			}
 		}
 	}

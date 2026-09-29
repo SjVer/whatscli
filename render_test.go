@@ -281,3 +281,22 @@ func TestUnreadMessagesAndReactionsAreHighlighted(t *testing.T) {
 		}
 	}
 }
+
+func TestGreyedOutNoticesAreNotDimmer(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(40, 4)
+	treeView = tview.NewTreeView()
+	textView = tview.NewTextView().SetDynamicColors(true)
+	textView.SetRect(0, 0, 40, 4)
+	textView.SetText("hi\n\n[::d]Your phone has no older messages[::-]")
+	treeView.Focus(func(tview.Primitive) {}) // the chat panel is greyed out
+	textView.Draw(screen)
+	greyOutUnfocusedPanel(screen)
+	fg, _, attr := styleAt(screen, 0, 2).Decompose()
+	if fg != tcell.ColorGray || attr&tcell.AttrDim != 0 {
+		t.Errorf("expected the notice to be grey like the rest, got %v with dim %v", fg, attr&tcell.AttrDim != 0)
+	}
+}
