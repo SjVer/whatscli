@@ -3,6 +3,7 @@ package messages
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/color"
 	_ "image/jpeg" // pictures are JPEG
@@ -21,9 +22,6 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 )
-
-// NotificationIcon is the PNG icon of the app on notifications, set by main
-var NotificationIcon []byte
 
 // pictureRecheck is how often a chat's picture is checked for changes
 const pictureRecheck = time.Hour
@@ -50,7 +48,10 @@ func (sm *SessionManager) chatPicture(chatID string) string {
 	if ok && time.Since(checked.at) < pictureRecheck {
 		return checked.path
 	}
-	path := sm.downloadChatPicture(chatID)
+	path, known := sm.downloadChatPicture(chatID)
+	if !known {
+		return path // tried again next time
+	}
 	sm.pictures.lock.Lock()
 	if sm.pictures.checked == nil {
 		sm.pictures.checked = make(map[string]checkedPicture)
@@ -60,49 +61,58 @@ func (sm *SessionManager) chatPicture(chatID string) string {
 	return path
 }
 
-func (sm *SessionManager) downloadChatPicture(chatID string) string {
+// downloadChatPicture returns the file of a chat's picture, downloading it
+// when it changed, and whether that is known: not when it failed, e.g. while
+// not connected.
+func (sm *SessionManager) downloadChatPicture(chatID string) (string, bool) {
 	configPath := config.GetConfigFilePath()
-	if sm.client == nil || !sm.client.IsConnected() || configPath == "" {
-		return ""
+	if configPath == "" {
+		return "", true
+	} else if sm.client == nil || !sm.client.IsConnected() {
+		return "", false
 	}
 	jid, err := types.ParseJID(chatID)
 	if err != nil {
-		return ""
+		return "", true
 	}
 	info, err := sm.client.GetProfilePictureInfo(context.Background(), jid, &whatsmeow.GetProfilePictureParams{Preview: true})
-	if err != nil || info == nil || info.URL == "" {
-		return ""
+	if errors.Is(err, whatsmeow.ErrProfilePictureNotSet) || errors.Is(err, whatsmeow.ErrProfilePictureUnauthorized) {
+		return "", true // none, or hidden
+	} else if err != nil {
+		return "", false
+	} else if info == nil || info.URL == "" {
+		return "", true
 	}
 	dir := filepath.Join(filepath.Dir(configPath), "pictures")
 	path := filepath.Join(dir, pictureFileName(jid.User, info.ID))
 	if _, err = os.Stat(path); err == nil {
-		return path
+		return path, true
 	}
 
 	client := http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(info.URL)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil || resp.StatusCode != http.StatusOK || os.MkdirAll(dir, 0700) != nil {
-		return ""
+		return "", false
 	}
 	round, err := roundPicture(data)
 	if err != nil {
-		return ""
+		return "", true // not a picture that can be shown
 	}
 	// the chat's earlier pictures
-	if old, err := filepath.Glob(filepath.Join(dir, strings.TrimSuffix(pictureFileName(jid.User, "*"), ".png")+"*")); err == nil {
+	if old, err := filepath.Glob(filepath.Join(dir, pictureFileName(jid.User, "*"))); err == nil {
 		for _, file := range old {
 			os.Remove(file)
 		}
 	}
 	if os.WriteFile(path, round, 0600) != nil {
-		return ""
+		return "", false
 	}
-	return path
+	return path, true
 }
 
 // roundPicture cuts the middle of a picture out as a circle with a smooth edge,
@@ -141,6 +151,7 @@ func roundPicture(data []byte) ([]byte, error) {
 func pictureFileName(user, pictureID string) string {
 	safe := func(text string) string {
 		return strings.Map(func(r rune) rune {
+			// * is kept for the pattern of all pictures of a chat
 			if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '*' {
 				return r
 			}

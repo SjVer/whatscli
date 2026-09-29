@@ -9,8 +9,7 @@ import (
 // notified: whatsmeow reconnects by itself, usually within seconds.
 var connectionLostDelay = 30 * time.Second
 
-// sendNotification shows a notification, see notify
-var sendNotification = notify
+const connectionLostText = "Connection to WhatsApp lost, reconnecting..."
 
 // connectionWatch notifies when the connection to WhatsApp is lost, once per
 // outage, and when it is back after that.
@@ -31,7 +30,7 @@ func (w *connectionWatch) disconnected() {
 			defer w.lock.Unlock()
 			if w.timer != nil {
 				w.timer = nil
-				w.notifyLocked("Connection to WhatsApp lost, reconnecting...")
+				w.notifyLocked(connectionLostText)
 			}
 		})
 	}
@@ -43,7 +42,7 @@ func (w *connectionWatch) unresponsive() {
 	w.lock.Lock()
 	defer w.lock.Unlock()
 	w.stopTimerLocked()
-	w.notifyLocked("Connection to WhatsApp lost, reconnecting...")
+	w.notifyLocked(connectionLostText)
 }
 
 // loggedOut is called when the phone logged whatscli out.
@@ -62,7 +61,7 @@ func (w *connectionWatch) connected() {
 	w.stopTimerLocked()
 	if w.notified {
 		w.notified = false
-		go sendNotification("whatscli", "Connected to WhatsApp again", "")
+		go sendNotification(appName, "Connected to WhatsApp again", "")
 	}
 }
 
@@ -77,6 +76,6 @@ func (w *connectionWatch) stopTimerLocked() {
 func (w *connectionWatch) notifyLocked(text string) {
 	if !w.notified {
 		w.notified = true
-		go sendNotification("whatscli", text, "")
+		go sendNotification(appName, text, "")
 	}
 }

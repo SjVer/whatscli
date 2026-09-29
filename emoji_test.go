@@ -89,23 +89,17 @@ func TestReplaceShortcodes(t *testing.T) {
 }
 
 // typeText types text into the input, one key at a time
-func typeText(text string) {
-	for _, r := range text {
-		typeKeys(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
-	}
-}
-
 func TestEmojiAutocomplete(t *testing.T) {
 	recentEmoji = nil
 	textInput = newTextInput()
 
 	typeText("so funny :so")
-	if !emojiPopupOpen() || emojiPopup.suggestions[0].name != "sob" {
-		t.Fatalf("expected suggestions starting with sob, got %v", emojiPopup.suggestions)
+	if !suggestionsOpen() || suggestionPopup.suggestions[0].emoji != "sob" {
+		t.Fatalf("expected suggestions starting with sob, got %v", suggestionPopup.suggestions)
 	}
-	second := emojiPopup.suggestions[1]
+	second := suggestionPopup.suggestions[1]
 	typeKeys(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-	if text := textInput.GetText(); text != "so funny "+second.emoji || emojiPopupOpen() {
+	if text := textInput.GetText(); text != "so funny "+second.insert || suggestionsOpen() {
 		t.Fatalf("expected Tab and Enter to insert the second suggestion, got %q", text)
 	}
 	// one backspace removes it again
@@ -118,7 +112,7 @@ func TestEmojiAutocomplete(t *testing.T) {
 	typeText(":so")
 	typeKeys(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	typeText(":jo")
-	if !emojiPopupOpen() {
+	if !suggestionsOpen() {
 		t.Fatalf("expected suggestions right after an emoji, in %q", textInput.GetText())
 	}
 
@@ -134,23 +128,28 @@ func TestEmojiAutocomplete(t *testing.T) {
 	typeText(":fir")
 	typeKeys(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
 	typeText("e")
-	if emojiPopupOpen() || textInput.GetText() != ":fire" {
+	if suggestionsOpen() || textInput.GetText() != ":fire" {
 		t.Fatalf("expected the suggestions to stay closed, got %q", textInput.GetText())
 	}
 	typeText(" :fir")
-	if !emojiPopupOpen() {
+	if !suggestionsOpen() {
 		t.Fatal("expected suggestions for the next shortcode")
+	}
+	// and when it is typed again at the same place
+	setInput("")
+	typeText(":fir")
+	typeKeys(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	setInput("")
+	typeText(":fir")
+	if !suggestionsOpen() {
+		t.Fatal("expected suggestions for a shortcode typed again after Escape")
 	}
 	recentEmoji = nil
 }
 
 func TestEmojiPopupIsDrawnAboveTheInput(t *testing.T) {
 	recentEmoji = nil
-	screen := tcell.NewSimulationScreen("")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	screen.SetSize(40, 16)
+	screen := newScreen(t, 40, 16)
 	textInput = newTextInput()
 	grid := tview.NewGrid().SetRows(0, 1)
 	grid.AddItem(textInput, 1, 0, 1, 1, 0, 0, true)
@@ -159,7 +158,7 @@ func TestEmojiPopupIsDrawnAboveTheInput(t *testing.T) {
 
 	typeText("hi :sob")
 	grid.Draw(screen)
-	drawEmojiPopup(screen)
+	drawSuggestions(screen)
 
 	found := -1
 	for y := 0; y < 16; y++ {
@@ -197,7 +196,7 @@ func TestEmojiShortcodesCanBeDisabled(t *testing.T) {
 	}
 	textInput = newTextInput()
 	typeText("hi :so")
-	if emojiPopupOpen() {
+	if suggestionsOpen() {
 		t.Fatal("expected no suggestions")
 	}
 	typeText("b:")

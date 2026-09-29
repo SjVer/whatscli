@@ -39,7 +39,7 @@ func registerNotificationApp() {
 		return
 	}
 	defer key.Close()
-	key.SetStringValue("DisplayName", "whatscli")
+	key.SetStringValue("DisplayName", appName)
 	if notificationIcon != "" {
 		key.SetStringValue("IconUri", notificationIcon)
 	}

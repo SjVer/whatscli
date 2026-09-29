@@ -27,11 +27,7 @@ func TestNoticesAreShownDimBelowTheirChat(t *testing.T) {
 		t.Error("expected the notice of another chat not to be shown")
 	}
 
-	screen := tcell.NewSimulationScreen("")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	screen.SetSize(80, 10)
+	screen := newScreen(t, 80, 10)
 	textView.SetRect(0, 0, 80, 10)
 	textView.Draw(screen)
 	for y := 0; y < 10; y++ {

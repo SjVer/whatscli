@@ -19,7 +19,7 @@ import (
 )
 
 // Emoji shortcodes like Discord and Slack have them: typing :sob: gives 😭, and
-// typing :so shows suggestions, see emojiPopup.
+// typing :so shows suggestions, see suggestionPopup.
 
 // emojiCode is an emoji with one of its shortcode names, without the colons
 type emojiCode struct {
@@ -205,16 +205,26 @@ func saveRecentEmoji() {
 	}
 }
 
-// maxEmojiSuggestions is how many suggestions the popup shows
-const maxEmojiSuggestions = 8
+// maxSuggestions is how many suggestions the popup shows
+const maxSuggestions = 8
 
-// emojiPopup shows suggestions while a shortcode is typed in the input, or
+// suggestion is an emoji or a group member suggested in the popup
+type suggestion struct {
+	// as it is shown in the popup
+	label string
+	// what replaces the typed shortcode or mention
+	insert string
+	// the name of the emoji, which is remembered as recently used, "" for a member
+	emoji string
+}
+
+// suggestionPopup shows suggestions while a shortcode is typed in the input, or
 // the members of a group while a mention is, see mentionQueryAt
-var emojiPopup struct {
-	suggestions []emojiCode
-	// whether the suggestions are members to mention, by name
+var suggestionPopup struct {
+	suggestions []suggestion
+	// whether the suggestions are members to mention
 	mentions bool
-	selected    int
+	selected int
 	// where the colon of the shortcode is in the input, and what was typed after it
 	start int
 	query string
@@ -222,23 +232,23 @@ var emojiPopup struct {
 	dismissed int
 }
 
-// emojiPopupOpen returns whether suggestions are shown
-func emojiPopupOpen() bool {
-	return len(emojiPopup.suggestions) > 0
+// suggestionsOpen returns whether suggestions are shown
+func suggestionsOpen() bool {
+	return len(suggestionPopup.suggestions) > 0
 }
 
-func closeEmojiPopup() {
-	emojiPopup.suggestions = nil
+func closeSuggestions() {
+	suggestionPopup.suggestions = nil
 }
 
-// updateEmojiSuggestions shows suggestions for the shortcode or mention typed
+// updateSuggestions shows suggestions for the shortcode or mention typed
 // before the cursor, or replaces a shortcode with its emoji when its closing
 // colon was typed
-func updateEmojiSuggestions() {
+func updateSuggestions() {
 	text := textInput.GetText()
 	selected, cursor, _ := textInput.GetSelection()
 	if selected != "" {
-		closeEmojiPopup()
+		closeSuggestions()
 		return
 	}
 	shortcodes := config.Config.General.EmojiShortcodes
@@ -246,7 +256,7 @@ func updateEmojiSuggestions() {
 		if start, query, ok := emojiQueryAt(text, cursor-1); ok {
 			if value, known := emojiByName[query]; known {
 				useEmoji(query)
-				closeEmojiPopup()
+				closeSuggestions()
 				textInput.Replace(start, cursor, value)
 				return
 			}
@@ -258,91 +268,92 @@ func updateEmojiSuggestions() {
 		start, query, ok = mentionQueryAt(text, cursor)
 		mentions = true
 	}
-	if !ok || start == emojiPopup.dismissed {
-		closeEmojiPopup()
+	if !ok {
+		// a shortcode typed at the same place again is suggested again
+		suggestionPopup.dismissed = -1
+		closeSuggestions()
+		return
+	} else if start == suggestionPopup.dismissed {
+		closeSuggestions()
 		return
 	}
-	emojiPopup.dismissed = -1
-	if start != emojiPopup.start || query != emojiPopup.query || mentions != emojiPopup.mentions {
-		emojiPopup.selected = 0
+	if start != suggestionPopup.start || query != suggestionPopup.query || mentions != suggestionPopup.mentions {
+		suggestionPopup.selected = 0
 	}
-	emojiPopup.start, emojiPopup.query, emojiPopup.mentions = start, query, mentions
-	if mentions && sessionManager != nil {
-		emojiPopup.suggestions = matchMembers(sessionManager.GroupMembers(currentReceiver.Id), query, maxEmojiSuggestions)
-	} else if mentions {
-		emojiPopup.suggestions = nil
+	suggestionPopup.start, suggestionPopup.query, suggestionPopup.mentions = start, query, mentions
+	suggestionPopup.suggestions = nil
+	if mentions {
+		for _, member := range matchMembers(groupMembers(), query, maxSuggestions) {
+			suggestionPopup.suggestions = append(suggestionPopup.suggestions, suggestion{label: "@" + member.Name, insert: "@" + member.Name + " "})
+		}
 	} else {
-		emojiPopup.suggestions = matchEmoji(query, maxEmojiSuggestions)
+		for _, code := range matchEmoji(query, maxSuggestions) {
+			suggestionPopup.suggestions = append(suggestionPopup.suggestions, suggestion{label: code.emoji + "  " + code.name, insert: code.emoji, emoji: code.name})
+		}
 	}
-	emojiPopup.selected = min(emojiPopup.selected, max(0, len(emojiPopup.suggestions)-1))
+	suggestionPopup.selected = min(suggestionPopup.selected, max(0, len(suggestionPopup.suggestions)-1))
 }
 
-// cycleEmoji selects the next suggestion, or the previous one with a negative step
-func cycleEmoji(step int) {
-	count := len(emojiPopup.suggestions)
-	emojiPopup.selected = ((emojiPopup.selected+step)%count + count) % count
+// cycleSuggestion selects the next suggestion, or the previous one with a negative step
+func cycleSuggestion(step int) {
+	count := len(suggestionPopup.suggestions)
+	suggestionPopup.selected = ((suggestionPopup.selected+step)%count + count) % count
 }
 
-// acceptEmoji replaces the typed shortcode with the selected suggestion
-func acceptEmoji() {
-	code := emojiPopup.suggestions[emojiPopup.selected]
+// acceptSuggestion replaces the typed shortcode or mention with the selected suggestion
+func acceptSuggestion() {
+	selected := suggestionPopup.suggestions[suggestionPopup.selected]
 	_, cursor, _ := textInput.GetSelection()
-	closeEmojiPopup()
-	if emojiPopup.mentions {
-		textInput.Replace(emojiPopup.start, cursor, "@"+code.name+" ")
-		return
+	closeSuggestions()
+	if selected.emoji != "" {
+		useEmoji(selected.emoji)
 	}
-	useEmoji(code.name)
-	textInput.Replace(emojiPopup.start, cursor, code.emoji)
+	textInput.Replace(suggestionPopup.start, cursor, selected.insert)
 }
 
-// handleEmojiPopupKeys lets the popup handle a key while it is open: Tab, Down
+// handleSuggestionKeys lets the popup handle a key while it is open: Tab, Down
 // and Up select a suggestion, Enter accepts it and Escape closes the popup
-func handleEmojiPopupKeys(event *tcell.EventKey) bool {
-	if !emojiPopupOpen() {
+func handleSuggestionKeys(event *tcell.EventKey) bool {
+	if !suggestionsOpen() {
 		return false
 	}
 	switch event.Key() {
 	case tcell.KeyTab, tcell.KeyDown:
-		cycleEmoji(1)
+		cycleSuggestion(1)
 	case tcell.KeyBacktab, tcell.KeyUp:
-		cycleEmoji(-1)
+		cycleSuggestion(-1)
 	case tcell.KeyEnter:
-		acceptEmoji()
+		acceptSuggestion()
 	case tcell.KeyEscape:
-		emojiPopup.dismissed = emojiPopup.start
-		closeEmojiPopup()
+		suggestionPopup.dismissed = suggestionPopup.start
+		closeSuggestions()
 	default:
 		return false
 	}
 	return true
 }
 
-// drawEmojiPopup draws the suggestions above the input, starting at the colon
-func drawEmojiPopup(screen tcell.Screen) {
-	if !emojiPopupOpen() || !textInput.HasFocus() {
+// drawSuggestions draws the suggestions above the input, starting at the colon
+func drawSuggestions(screen tcell.Screen) {
+	if !suggestionsOpen() || !textInput.HasFocus() {
 		return
 	}
 	list := tview.NewList().ShowSecondaryText(false).SetHighlightFullLine(true)
 	list.SetBorder(true)
 	width := 0
-	for _, code := range emojiPopup.suggestions {
-		item := code.emoji + "  " + code.name
-		if emojiPopup.mentions {
-			item = "@" + code.name
-		}
-		list.AddItem(item, "", 0, nil)
-		width = max(width, uniseg.StringWidth(item))
+	for _, suggested := range suggestionPopup.suggestions {
+		list.AddItem(suggested.label, "", 0, nil)
+		width = max(width, uniseg.StringWidth(suggested.label))
 	}
-	list.SetCurrentItem(emojiPopup.selected)
+	list.SetCurrentItem(suggestionPopup.selected)
 
 	inputX, inputY, _, _ := textInput.GetInnerRect()
 	_, _, cursorRow, cursorColumn := textInput.GetCursor()
 	offsetRow, offsetColumn := textInput.GetOffset()
 	screenWidth, _ := screen.Size()
 	width += 4 // borders and padding
-	height := len(emojiPopup.suggestions) + 2
-	x := inputX + cursorColumn - offsetColumn - uniseg.StringWidth(emojiPopup.query) - 2
+	height := len(suggestionPopup.suggestions) + 2
+	x := inputX + cursorColumn - offsetColumn - uniseg.StringWidth(suggestionPopup.query) - 2
 	x = max(0, min(x, screenWidth-width))
 	y := max(0, inputY+cursorRow-offsetRow-height)
 	list.SetRect(x, y, width, height)
@@ -373,21 +384,28 @@ func mentionQueryAt(text string, cursor int) (int, string, bool) {
 	return at, strings.ToLower(text[start:cursor]), true
 }
 
+// groupMembers returns the members of the open chat that can be mentioned,
+// none if it isn't a group
+func groupMembers() []messages.Member {
+	if sessionManager == nil {
+		return nil
+	}
+	return sessionManager.GroupMembers(currentReceiver.Id)
+}
+
 // matchMembers returns up to limit members whose name contains query, the ones
-// with a word of their name starting with it first. They are given as emoji
-// codes without emoji, for the popup.
-func matchMembers(members []messages.Member, query string, limit int) []emojiCode {
-	var first, other []emojiCode
+// with a word of their name starting with it first
+func matchMembers(members []messages.Member, query string, limit int) []messages.Member {
+	var first, other []messages.Member
 	for _, member := range members {
 		name := strings.ToLower(member.Name)
 		if !strings.Contains(name, query) {
 			continue
 		}
-		code := emojiCode{name: member.Name}
 		if strings.HasPrefix(name, query) || strings.Contains(name, " "+query) {
-			first = append(first, code)
+			first = append(first, member)
 		} else {
-			other = append(other, code)
+			other = append(other, member)
 		}
 	}
 	matches := append(first, other...)

@@ -15,15 +15,21 @@ import (
 
 // drawText draws tagged text like the message panel does, and returns the screen
 func drawText(t *testing.T, text string) tcell.SimulationScreen {
-	screen := tcell.NewSimulationScreen("")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	screen.SetSize(40, 6)
+	screen := newScreen(t, 40, 6)
 	view := tview.NewTextView().SetDynamicColors(true).SetRegions(true).SetWordWrap(true)
 	view.SetText(text)
 	view.SetRect(0, 0, 40, 6)
 	view.Draw(screen)
+	return screen
+}
+
+// newScreen returns a simulated screen of the size to draw on
+func newScreen(t *testing.T, width, height int) tcell.SimulationScreen {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(width, height)
 	return screen
 }
 
@@ -74,11 +80,7 @@ func TestWrappedLineCountMatchesTheInput(t *testing.T) {
 	}
 	for _, width := range []int{10, 17, 30} {
 		for _, text := range texts {
-			screen := tcell.NewSimulationScreen("")
-			if err := screen.Init(); err != nil {
-				t.Fatal(err)
-			}
-			screen.SetSize(width, 30)
+			screen := newScreen(t, width, 30)
 			input := tview.NewTextArea()
 			input.SetText(text, false)
 			input.SetRect(0, 0, width, 30)
@@ -104,11 +106,7 @@ func TestWrappedLineCountMatchesTheInput(t *testing.T) {
 }
 
 func TestGrownInputShowsAllLines(t *testing.T) {
-	screen := tcell.NewSimulationScreen("")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	screen.SetSize(12, 8)
+	screen := newScreen(t, 12, 8)
 	textInput = tview.NewTextArea()
 	grid := tview.NewGrid().SetRows(1, 0, 1)
 	grid.AddItem(textInput, 2, 0, 1, 1, 0, 0, true)
@@ -136,11 +134,7 @@ func TestGrownInputShowsAllLines(t *testing.T) {
 }
 
 func TestGreyChatListKeepsUnreadCountsColored(t *testing.T) {
-	screen := tcell.NewSimulationScreen("")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	screen.SetSize(30, 4)
+	screen := newScreen(t, 30, 4)
 	root := setNodeColor(tview.NewTreeNode("Chats"), tcell.ColorNames[config.Config.Colors.ListHeader])
 	root.AddChild(setNodeColor(tview.NewTreeNode(chatNodeText(messages.Chat{Id: "alice", Name: "Alice", Unread: 3})), tcell.ColorGreen))
 	treeView = tview.NewTreeView().SetRoot(root).SetCurrentNode(root)
@@ -182,11 +176,7 @@ func TestEscapeInEmptyInputScrollsToTheNewestMessages(t *testing.T) {
 	messageSearch, chatSearch = "", ""
 
 	EnterCommand(tcell.KeyEsc)
-	screen := tcell.NewSimulationScreen("")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	screen.SetSize(20, 3)
+	screen := newScreen(t, 20, 3)
 	textView.Draw(screen)
 	if row, _ := textView.GetScrollOffset(); row == 0 {
 		t.Fatal("expected Escape to scroll the chat down to the newest messages")
@@ -217,11 +207,7 @@ func TestOpeningAChatScrollsToItsNewestMessages(t *testing.T) {
 	chatRoot = tview.NewTreeNode("Chats")
 	textView = tview.NewTextView().SetDynamicColors(true).SetRegions(true)
 	textView.SetRect(0, 0, 20, 3)
-	screen := tcell.NewSimulationScreen("")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	screen.SetSize(20, 3)
+	screen := newScreen(t, 20, 3)
 	currentReceiver = messages.Chat{Id: "alice"}
 	for i := 0; i < 20; i++ {
 		fmt.Fprintf(textView, "line %d\n", i)
@@ -283,11 +269,7 @@ func TestUnreadMessagesAndReactionsAreHighlighted(t *testing.T) {
 }
 
 func TestGreyedOutNoticesAreNotDimmer(t *testing.T) {
-	screen := tcell.NewSimulationScreen("")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	screen.SetSize(40, 4)
+	screen := newScreen(t, 40, 4)
 	treeView = tview.NewTreeView()
 	textView = tview.NewTextView().SetDynamicColors(true)
 	textView.SetRect(0, 0, 40, 4)

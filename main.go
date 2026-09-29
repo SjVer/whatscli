@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -34,7 +35,6 @@ var notificationIcon []byte
 
 var VERSION string = "v1.1.6"
 
-var sndTxt string = ""
 var currentReceiver messages.Chat = messages.Chat{}
 var curRegions []messages.Message
 
@@ -136,7 +136,7 @@ func main() {
 	})
 	app.SetAfterDrawFunc(func(screen tcell.Screen) {
 		greyOutUnfocusedPanel(screen)
-		drawEmojiPopup(screen)
+		drawSuggestions(screen)
 		updateTitle(screen)
 	})
 	app.EnableMouse(true)
@@ -168,19 +168,18 @@ func newTextInput() *tview.TextArea {
 		Background(tcell.ColorNames[config.Config.Colors.InputBackground]).
 		Foreground(tcell.ColorNames[config.Config.Colors.InputText]))
 	input.SetChangedFunc(func() {
-		sndTxt = textInput.GetText()
 		updateInputColor()
-		updateEmojiSuggestions()
+		updateSuggestions()
 	})
-	input.SetMovedFunc(updateEmojiSuggestions)
+	input.SetMovedFunc(updateSuggestions)
 	input.SetInputCapture(handleInputKeys)
-	emojiPopup.dismissed = -1
+	suggestionPopup.dismissed = -1
 	return input
 }
 
 // handles keys of the input field before it does
 func handleInputKeys(event *tcell.EventKey) *tcell.EventKey {
-	if handleEmojiPopupKeys(event) {
+	if handleSuggestionKeys(event) {
 		return nil
 	}
 	// word-wise moving and deleting. Ctrl+Left and selecting with Ctrl+Shift
@@ -221,33 +220,26 @@ func handleInputKeys(event *tcell.EventKey) *tcell.EventKey {
 		// move between the lines of a longer message, else scroll the messages
 		if inputLines > 1 {
 			return event
+		} else if event.Key() == tcell.KeyUp {
+			scrollMessages(-1)
+		} else {
+			scrollMessages(1)
 		}
-	}
-	if event.Key() == tcell.KeyDown {
-		offset, _ := textView.GetScrollOffset()
-		offset += 1
-		textView.ScrollTo(offset, 0)
 		return nil
-	}
-	if event.Key() == tcell.KeyUp {
-		offset, _ := textView.GetScrollOffset()
-		offset -= 1
-		textView.ScrollTo(offset, 0)
+	case tcell.KeyPgUp:
+		scrollMessages(-10)
 		return nil
-	}
-	if event.Key() == tcell.KeyPgDn {
-		offset, _ := textView.GetScrollOffset()
-		offset += 10
-		textView.ScrollTo(offset, 0)
-		return nil
-	}
-	if event.Key() == tcell.KeyPgUp {
-		offset, _ := textView.GetScrollOffset()
-		offset -= 10
-		textView.ScrollTo(offset, 0)
+	case tcell.KeyPgDn:
+		scrollMessages(10)
 		return nil
 	}
 	return event
+}
+
+// scrollMessages scrolls the messages by lines, up for a negative number
+func scrollMessages(lines int) {
+	offset, _ := textView.GetScrollOffset()
+	textView.ScrollTo(offset+lines, 0)
 }
 
 // maxInputLines is how high the input grows for longer messages
@@ -259,9 +251,9 @@ var inputLines = 1
 // setInput sets the text of the input, with the cursor at the end
 func setInput(text string) {
 	textInput.SetText(text, true)
-	sndTxt = text
+	// the input doesn't call its changed func for this
 	updateInputColor()
-	updateEmojiSuggestions()
+	updateSuggestions()
 }
 
 // sendingCommands put something into the chat, unlike the silent commands
@@ -272,12 +264,16 @@ var sendingCommands = map[string]bool{
 // parseCommand returns whether text is a command, and whether it is silent,
 // sending nothing to the chat
 func parseCommand(text string) (isCommand bool, silent bool) {
+	name, _, isCommand := cutCommand(text)
+	return isCommand, isCommand && !sendingCommands[name]
+}
+
+// cutCommand returns the name of the command typed in text and what follows
+// it, and whether text is a command
+func cutCommand(text string) (string, string, bool) {
 	command, ok := strings.CutPrefix(text, config.Config.General.CmdPrefix)
-	if !ok {
-		return false, false
-	}
-	name, _, _ := strings.Cut(command, " ")
-	return true, !sendingCommands[name]
+	name, args, _ := strings.Cut(command, " ")
+	return name, args, ok
 }
 
 // updateInputColor shows commands in their own colors, silent ones apart
@@ -426,7 +422,7 @@ func isUnreadCount(style tcell.Style) bool {
 func handleFocusMessage(ev *tcell.EventKey) *tcell.EventKey {
 	if !textView.HasFocus() {
 		app.SetFocus(textView)
-		if curRegions != nil && len(curRegions) > 0 {
+		if len(curRegions) > 0 {
 			textView.Highlight(curRegions[len(curRegions)-1].Id)
 		}
 	}
@@ -451,7 +447,7 @@ func handleFocusContacts(ev *tcell.EventKey) *tcell.EventKey {
 
 func handleSwitchPanels(ev *tcell.EventKey) *tcell.EventKey {
 	// Tab cycles the emoji suggestions while they are shown
-	if textInput.HasFocus() && handleEmojiPopupKeys(ev) {
+	if textInput.HasFocus() && handleSuggestionKeys(ev) {
 		return nil
 	}
 	ResetMsgSelection()
@@ -465,7 +461,7 @@ func handleSwitchPanels(ev *tcell.EventKey) *tcell.EventKey {
 
 func handleCommand(command string) func(ev *tcell.EventKey) *tcell.EventKey {
 	return func(ev *tcell.EventKey) *tcell.EventKey {
-		sessionManager.CommandChannel <- messages.Command{command, nil}
+		sessionManager.CommandChannel <- messages.Command{Name: command}
 		return nil
 	}
 }
@@ -505,14 +501,14 @@ func safeReadClipboard() (clip string, err error) {
 }
 
 func handleQuit(ev *tcell.EventKey) *tcell.EventKey {
-	sessionManager.CommandChannel <- messages.Command{"disconnect", nil}
+	sessionManager.CommandChannel <- messages.Command{Name: "disconnect"}
 	app.Stop()
 	return nil
 }
 
 func handleHelp(ev *tcell.EventKey) *tcell.EventKey {
 	PrintHelp()
-	printedSinceRender = true
+	printedSinceRender.Store(true)
 	return nil
 }
 
@@ -520,7 +516,7 @@ func handleMessageCommand(command string) func(ev *tcell.EventKey) *tcell.EventK
 	return func(ev *tcell.EventKey) *tcell.EventKey {
 		hls := textView.GetHighlights()
 		if len(hls) > 0 {
-			sessionManager.CommandChannel <- messages.Command{command, []string{hls[0]}}
+			sessionManager.CommandChannel <- messages.Command{Name: command, Params: []string{hls[0]}}
 			ResetMsgSelection()
 			app.SetFocus(textInput)
 		}
@@ -560,7 +556,7 @@ func React(emoji string) {
 
 func handleMessagesMove(amount int) func(ev *tcell.EventKey) *tcell.EventKey {
 	return func(ev *tcell.EventKey) *tcell.EventKey {
-		if curRegions == nil || len(curRegions) == 0 {
+		if len(curRegions) == 0 {
 			return nil
 		}
 		hls := textView.GetHighlights()
@@ -607,31 +603,22 @@ func showChatsRoot() {
 	}
 }
 
-func handleChatPanelUp(ev *tcell.EventKey) *tcell.EventKey {
-	//TODO: scroll selection in treeView? or chatRoot? How?
-	return ev
-}
-
-func handleChatPanelDown(ev *tcell.EventKey) *tcell.EventKey {
-	return ev
-}
-
 func handleMessagesLast(ev *tcell.EventKey) *tcell.EventKey {
-	if curRegions == nil || len(curRegions) == 0 {
-		return nil
-	}
-	textView.Highlight(curRegions[len(curRegions)-1].Id)
-	textView.ScrollToHighlight()
+	selectMessage(len(curRegions) - 1)
 	return nil
 }
 
 func handleMessagesFirst(ev *tcell.EventKey) *tcell.EventKey {
-	if curRegions == nil || len(curRegions) == 0 {
-		return nil
-	}
-	textView.Highlight(curRegions[0].Id)
-	textView.ScrollToHighlight()
+	selectMessage(0)
 	return nil
+}
+
+// selectMessage selects the shown message at the index, if there is one
+func selectMessage(idx int) {
+	if idx >= 0 && idx < len(curRegions) {
+		textView.Highlight(curRegions[idx].Id)
+		textView.ScrollToHighlight()
+	}
 }
 
 func handleExitMessages(ev *tcell.EventKey) *tcell.EventKey {
@@ -639,7 +626,7 @@ func handleExitMessages(ev *tcell.EventKey) *tcell.EventKey {
 		Search("")
 		return nil
 	}
-	if curRegions == nil || len(curRegions) == 0 {
+	if len(curRegions) == 0 {
 		return nil
 	}
 	ResetMsgSelection()
@@ -728,8 +715,6 @@ func LoadShortcuts() {
 	textView.SetInputCapture(keysMessages.Capture)
 	keysChatPanel := cbind.NewConfiguration()
 	keysChatPanel.SetKey(tcell.ModNone, tcell.KeyEscape, handleExitChats)
-	keysChatPanel.SetRune(tcell.ModCtrl, 'u', handleChatPanelUp)
-	keysChatPanel.SetRune(tcell.ModCtrl, 'd', handleChatPanelDown)
 	treeView.SetInputCapture(keysChatPanel.Capture)
 }
 
@@ -775,6 +760,7 @@ func PrintHelp() {
 }
 
 func PrintCommands() {
+	printedSinceRender.Store(true)
 	cmdPrefix := config.Config.General.CmdPrefix
 	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "[-::u]Commands:[-::U]")
@@ -815,11 +801,12 @@ func PrintCommands() {
 
 // called when text is entered by the user
 func EnterCommand(key tcell.Key) {
+	text := textInput.GetText()
 	if key == tcell.KeyEsc {
 		// clear the input first, then the search results, then scroll the
 		// chat back down to the newest messages
 		reactTarget = ""
-		if sndTxt != "" {
+		if text != "" {
 			setInput("")
 		} else if messageSearch != "" || chatSearch != "" {
 			Search("")
@@ -828,65 +815,44 @@ func EnterCommand(key tcell.Key) {
 		}
 		return
 	}
-	if sndTxt == "" {
+	if text == "" {
 		return
 	}
-	cmdPrefix := config.Config.General.CmdPrefix
-	if sndTxt == cmdPrefix+"help" {
-		PrintHelp()
-		printedSinceRender = true
-		setInput("")
-		return
-	}
-	if sndTxt == cmdPrefix+"commands" {
-		PrintCommands()
-		setInput("")
-		return
-	}
-	if sndTxt == cmdPrefix+"react" || strings.HasPrefix(sndTxt, cmdPrefix+"react ") {
-		React(strings.TrimSpace(strings.TrimPrefix(sndTxt, cmdPrefix+"react")))
-		setInput("")
-		return
-	}
-	if sndTxt == cmdPrefix+"search" || strings.HasPrefix(sndTxt, cmdPrefix+"search ") {
-		Search(strings.TrimSpace(strings.TrimPrefix(sndTxt, cmdPrefix+"search")))
-		setInput("")
-		return
-	}
-	if sndTxt == cmdPrefix+"quit" {
-		sessionManager.CommandChannel <- messages.Command{"disconnect", nil}
-		app.Stop()
-		return
-	}
-	if strings.HasPrefix(sndTxt, cmdPrefix) {
-		cmd := strings.TrimPrefix(sndTxt, cmdPrefix)
-		var params []string
-		if strings.Index(cmd, " ") >= 0 {
-			cmdParts := strings.Split(cmd, " ")
-			cmd = cmdParts[0]
-			params = cmdParts[1:]
+	defer setInput("")
+	name, args, isCommand := cutCommand(text)
+	if !isCommand {
+		if currentReceiver.Id == "" {
+			PrintText("no receiver")
+			return
 		}
-		sessionManager.CommandChannel <- messages.Command{cmd, params}
-		setInput("")
+		sessionManager.CommandChannel <- messages.Command{Name: "send", Params: []string{currentReceiver.Id, replaceShortcodes(text)}}
 		return
 	}
-	if currentReceiver.Id == "" {
-		PrintText("no receiver")
-		setInput("")
-		return
+	// commands of the UI, the others are run by the session manager
+	switch name {
+	case "help":
+		handleHelp(nil)
+	case "commands":
+		PrintCommands()
+	case "react":
+		React(strings.TrimSpace(args))
+	case "search":
+		Search(strings.TrimSpace(args))
+	case "quit":
+		handleQuit(nil)
+	default:
+		var params []string
+		if args != "" {
+			// split at single spaces, which keeps the spaces and lines of a message
+			params = strings.Split(args, " ")
+		}
+		sessionManager.CommandChannel <- messages.Command{Name: name, Params: params}
 	}
-	// no command, send as message
-	msg := messages.Command{
-		Name:   "send",
-		Params: []string{currentReceiver.Id, replaceShortcodes(sndTxt)},
-	}
-	sessionManager.CommandChannel <- msg
-	setInput("")
 }
 
 // get the next message id to select (highlighted + offset)
 func GetOffsetMsgId(curId string, offset int) string {
-	if curRegions == nil || len(curRegions) == 0 {
+	if len(curRegions) == 0 {
 		return ""
 	}
 	for idx, val := range curRegions {
@@ -915,7 +881,7 @@ func ResetMsgSelection() {
 // prints text to the TextView
 func PrintText(txt string) {
 	fmt.Fprintln(textView, txt)
-	printedSinceRender = true
+	printedSinceRender.Store(true)
 }
 
 // prints an error to the TextView
@@ -924,7 +890,7 @@ func PrintError(err error) {
 		return
 	}
 	fmt.Fprintln(textView, "["+config.Config.Colors.Negative+"]", err.Error(), "[-]")
-	printedSinceRender = true
+	printedSinceRender.Store(true)
 }
 
 // prints an error to the TextView
@@ -933,9 +899,9 @@ func PrintErrorMsg(text string, err error) {
 		return
 	}
 	fmt.Fprintln(textView, "["+config.Config.Colors.Negative+"]", text, err.Error(), "[-]")
+	printedSinceRender.Store(true)
 }
 
-// prints an image attachment to the TextView (by message id)
 // openWithCommand runs a command with a file added, in the background. What it
 // prints, like an image drawn with text by jp2a, is shown in the message panel.
 func openWithCommand(command string, path string) error {
@@ -949,6 +915,7 @@ func openWithCommand(command string, path string) error {
 		return err
 	}
 	go func() {
+		printedSinceRender.Store(true)
 		io.Copy(tview.ANSIWriter(textView), bufio.NewReader(stdout))
 		cmd.Wait()
 	}()
@@ -1058,7 +1025,6 @@ func switchDraft(from string, to string, typed string) string {
 
 // sets the current chat, loads text from storage to TextView
 func SetDisplayedChat(wid messages.Chat) {
-	//TODO: how to get chat to set
 	if wid.Id != currentReceiver.Id {
 		setInput(switchDraft(currentReceiver.Id, wid.Id, textInput.GetText()))
 		updateChatNode(currentReceiver.Id)
@@ -1066,15 +1032,14 @@ func SetDisplayedChat(wid messages.Chat) {
 		// the message to react to is in the other chat
 		reactTarget = ""
 		// a chat opens at its newest messages, also after scrolling up in the one before
-		textView.Highlight("")
-		textView.ScrollToEnd()
+		ResetMsgSelection()
 	}
 	currentReceiver = wid
 	chatMessages = nil
 	messageSearch = ""
 	textView.Clear()
 	textView.SetTitle(wid.Name)
-	sessionManager.CommandChannel <- messages.Command{"select", []string{currentReceiver.Id}}
+	sessionManager.CommandChannel <- messages.Command{Name: "select", Params: []string{currentReceiver.Id}}
 }
 
 // get a string representation of all messages for chat
@@ -1156,7 +1121,6 @@ func getReactionString(msg *messages.Message, reactor string, at int64) string {
 // other to be shown as a group, with the time and name only on the first one
 const messageGroupGap = 2 * time.Minute
 
-// continuesGroup returns whether msg is shown in the group of the message before it
 // hasUnreadReaction returns whether one of the reactions to a message in the
 // chat is new, see messages.Chat.UnreadReactions
 func hasUnreadReaction(msg *messages.Message, chat messages.Chat) bool {
@@ -1168,6 +1132,7 @@ func hasUnreadReaction(msg *messages.Message, chat messages.Chat) bool {
 	return false
 }
 
+// continuesGroup returns whether msg is shown in the group of the message before it
 func continuesGroup(prev *messages.Message, msg *messages.Message) bool {
 	// unread messages start a group, so that their time shows they are unread
 	if prev == nil || prev.FromMe != msg.FromMe || (!msg.FromMe && prev.ContactId != msg.ContactId) || prev.Unread != msg.Unread {
@@ -1222,7 +1187,7 @@ func formatMessageTime(sent time.Time, now time.Time) string {
 }
 
 // create a formatted string with regions based on message ID from a text message
-//TODO: optimize, use Sprintf etc
+// TODO: optimize, use Sprintf etc
 func getTextMessageString(msg *messages.Message, prev *messages.Message) string {
 	colorMe := config.Config.Colors.ChatMe
 	colorContact := config.Config.Colors.ChatContact
@@ -1276,7 +1241,7 @@ func (u UiHandler) NewMessage(msg messages.Message) {
 			return
 		}
 		// the notices stay below the messages
-		if len(notices[currentReceiver.Id]) > 0 && !printedSinceRender {
+		if len(notices[currentReceiver.Id]) > 0 && !printedSinceRender.Load() {
 			renderMessages()
 			return
 		}
@@ -1324,13 +1289,13 @@ func renderMessages() {
 		}
 	}
 	printNotices(currentReceiver.Id)
-	printedSinceRender = false
+	printedSinceRender.Store(false)
 }
 
 // printedSinceRender is whether text was printed below the messages since they
 // were shown, like the QR code or the info of a message, which showing them
-// again would remove
-var printedSinceRender bool
+// again would remove. It is set from other goroutines too, e.g. for the QR code.
+var printedSinceRender atomic.Bool
 
 // notice is a status line shown below the messages of a chat, see SetNotice
 type notice struct {
@@ -1366,6 +1331,11 @@ func setNotice(chatID, key, text string) bool {
 	return true
 }
 
+// noticeLine returns a notice as it is shown, dim on its own line
+func noticeLine(text string) string {
+	return "[::d]" + tview.Escape(text) + "[::-]\n"
+}
+
 // printNotices shows the notices of a chat dim, below an empty line
 func printNotices(chatID string) {
 	if len(notices[chatID]) == 0 {
@@ -1373,7 +1343,7 @@ func printNotices(chatID string) {
 	}
 	out := "\n"
 	for _, notice := range notices[chatID] {
-		out += "[::d]" + tview.Escape(notice.text) + "[::-]\n"
+		out += noticeLine(notice.text)
 	}
 	fmt.Fprint(textView, out)
 }
@@ -1462,10 +1432,11 @@ func (u UiHandler) SetChats(ids []messages.Chat) {
 		allChats = pendingChats.chats
 		pendingChats.queued = false
 		pendingChats.lock.Unlock()
+		// renderChats updates currentReceiver with the chat from the new list
 		reactions := currentReceiver.UnreadReactions
 		renderChats()
 		// the new reactions are shown in the chat
-		if !slices.Equal(reactions, currentReceiver.UnreadReactions) && !printedSinceRender {
+		if !slices.Equal(reactions, currentReceiver.UnreadReactions) && !printedSinceRender.Load() {
 			renderMessages()
 		}
 	})
@@ -1599,10 +1570,10 @@ func (u UiHandler) SetNotice(chatID, key, text string) {
 		if !setNotice(chatID, key, text) || chatID != currentReceiver.Id {
 			return
 		}
-		if !printedSinceRender {
+		if !printedSinceRender.Load() {
 			renderMessages()
 		} else if text != "" {
-			fmt.Fprint(textView, "[::d]"+tview.Escape(text)+"[::-]\n")
+			fmt.Fprint(textView, noticeLine(text))
 		}
 	})
 }

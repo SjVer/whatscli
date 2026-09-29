@@ -147,8 +147,7 @@ func TestChatNodeTextMarksDrafts(t *testing.T) {
 }
 
 func TestShiftEnterStartsANewLine(t *testing.T) {
-	textInput = tview.NewTextArea()
-	textInput.SetInputCapture(handleInputKeys)
+	textInput = newTextInput()
 	setInput("one")
 	typeKeys(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModShift), tcell.NewEventKey(tcell.KeyRune, 't', tcell.ModNone))
 	if text := textInput.GetText(); text != "one\nt" {
@@ -179,6 +178,13 @@ func TestWrappedLineCount(t *testing.T) {
 }
 
 // typeKeys sends keys to the input field, through its key handling
+// typeText types text in the input, key by key
+func typeText(text string) {
+	for _, r := range text {
+		typeKeys(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+}
+
 func typeKeys(keys ...*tcell.EventKey) {
 	for _, key := range keys {
 		textInput.InputHandler()(key, func(tview.Primitive) {})
@@ -186,8 +192,7 @@ func typeKeys(keys ...*tcell.EventKey) {
 }
 
 func TestWordDeletingKeys(t *testing.T) {
-	textInput = tview.NewTextArea()
-	textInput.SetInputCapture(handleInputKeys)
+	textInput = newTextInput()
 	left := tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone)
 
 	setInput("one two three")
@@ -221,8 +226,7 @@ func TestNextWordStart(t *testing.T) {
 }
 
 func TestCtrlArrowsMoveByWords(t *testing.T) {
-	textInput = tview.NewTextArea()
-	textInput.SetInputCapture(handleInputKeys)
+	textInput = newTextInput()
 	setInput("one two three")
 	typeKeys(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone))
 
@@ -307,6 +311,7 @@ func TestCommandsAreColored(t *testing.T) {
 }
 
 func TestReactionLinesInTheChat(t *testing.T) {
+	defer func(names func(string) string) { reactorName = names }(reactorName)
 	reactorName = func(reactor string) string { return map[string]string{"bob": "Bob", "me": "You"}[reactor] }
 	messageSearch = ""
 	msgs := []messages.Message{

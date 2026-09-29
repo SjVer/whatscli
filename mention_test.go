@@ -30,7 +30,7 @@ func TestMatchMembers(t *testing.T) {
 	members := []messages.Member{{Id: "1@lid", Name: "Alice Smith"}, {Id: "2@lid", Name: "Bob"}, {Id: "3@lid", Name: "Carol Lee"}}
 	matches := matchMembers(members, "l", 8)
 	// names with a word starting with l first
-	if len(matches) != 2 || matches[0].name != "Carol Lee" || matches[1].name != "Alice Smith" {
+	if len(matches) != 2 || matches[0].Name != "Carol Lee" || matches[1].Name != "Alice Smith" {
 		t.Errorf("unexpected matches %v", matches)
 	}
 	if all := matchMembers(members, "", 2); len(all) != 2 {

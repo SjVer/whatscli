@@ -3,6 +3,7 @@ package messages
 
 import (
 	"io"
+	"strings"
 
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 )
@@ -74,8 +75,8 @@ type Message struct {
 	FileName     string
 	Unread       bool
 	// the mentions in Text as they are shown, like @Alice
-	Mentions []string `json:",omitempty"`
-	RawMessage   *waProto.Message `json:"-"` // saved as SavedMessage.Raw
+	Mentions   []string         `json:",omitempty"`
+	RawMessage *waProto.Message `json:"-"` // saved as SavedMessage.Raw
 	// emoji reactions by who reacted, see ReactorMe, and when they were given
 	Reactions     map[string]string `json:",omitempty"`
 	ReactionTimes map[string]int64  `json:",omitempty"`
@@ -135,5 +136,11 @@ type Contact struct {
 }
 
 const GROUPSUFFIX = "@g.us"
+
+// isGroupID returns whether a chat ID is of a group
+func isGroupID(id string) bool {
+	return strings.HasSuffix(id, GROUPSUFFIX)
+}
+
 const CONTACTSUFFIX = "@s.whatsapp.net"
 const STATUSSUFFIX = "status@broadcast"

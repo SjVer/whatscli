@@ -30,9 +30,9 @@ type groupMembers struct {
 
 // GroupMembers returns the members of a group that can be mentioned, without
 // the user, sorted by name. They are loaded in the background the first time,
-// and nil until then.
+// and nil until then, or while not connected.
 func (sm *SessionManager) GroupMembers(chatID string) []Member {
-	if !strings.HasSuffix(chatID, GROUPSUFFIX) {
+	if !isGroupID(chatID) {
 		return nil
 	}
 	sm.members.lock.Lock()
@@ -73,7 +73,7 @@ func (sm *SessionManager) loadGroupMembers(chatID string) {
 
 // membersOf returns the participants of a group with their names, without the user
 func (sm *SessionManager) membersOf(participants []types.GroupParticipant) []Member {
-	var members []Member
+	members := []Member{} // loaded, see GroupMembers
 	for _, participant := range participants {
 		if sm.isOwnUser(participant.JID) || sm.isOwnUser(participant.PhoneNumber) || sm.isOwnUser(participant.LID) {
 			continue
@@ -83,7 +83,7 @@ func (sm *SessionManager) membersOf(participants []types.GroupParticipant) []Mem
 			lookup = participant.PhoneNumber // contacts are saved under the number
 		}
 		_, name, _ := sm.contactNames(lookup)
-		if name == "" || strings.Contains(name, "@") {
+		if !isShownName(name) {
 			name = lookup.User
 		}
 		members = append(members, Member{Id: participant.JID.ToNonAD().String(), Name: name})
@@ -127,7 +127,7 @@ func (sm *SessionManager) showMentions(text string, mentioned []string) (string,
 			_, name, _ = sm.contactNames(jid)
 		}
 		mention := "@" + jid.User
-		if name != "" && !strings.Contains(name, "@") {
+		if isShownName(name) {
 			text = strings.ReplaceAll(text, mention, "@"+name)
 			mention = "@" + name
 		}
@@ -136,6 +136,12 @@ func (sm *SessionManager) showMentions(text string, mentioned []string) (string,
 		}
 	}
 	return text, shown
+}
+
+// isShownName returns whether a contact name can be shown instead of a
+// number: contactNames returns the JID when it knows no name
+func isShownName(name string) bool {
+	return name != "" && !strings.Contains(name, "@")
 }
 
 // isOwnUser returns whether jid is the user, by number or LID

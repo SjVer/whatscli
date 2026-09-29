@@ -69,10 +69,10 @@ func (sm *SessionManager) DumpChat(w io.Writer, chatID string) {
 	if picture := sm.chatPicture(chatID); picture != "" {
 		fmt.Fprintf(w, "picture: %s\n", picture)
 	}
-	if strings.HasSuffix(chatID, GROUPSUFFIX) {
+	if isGroupID(chatID) {
 		// they load in the background
 		members := sm.GroupMembers(chatID)
-		for start := time.Now(); members == nil && time.Since(start) < 10*time.Second; members = sm.GroupMembers(chatID) {
+		for start := time.Now(); members == nil && sm.client.IsConnected() && time.Since(start) < 10*time.Second; members = sm.GroupMembers(chatID) {
 			time.Sleep(100 * time.Millisecond)
 		}
 		names := make([]string, len(members))

@@ -276,6 +276,7 @@ func (sm *SessionManager) useCacheStore(device *store.Device) error {
 // keys of the notices on the main screen, see UiMessageHandler.SetNotice
 const (
 	connectionNotice = "connection"
+	contactsNotice   = "contacts"
 	appStateNotice   = "appstate"
 )
 
@@ -426,7 +427,7 @@ func (sm *SessionManager) loadRecentChats() {
 
 	sm.uiHandler.SetChats(sm.db.GetChatIds())
 	if addedChats > 0 {
-		sm.uiHandler.SetNotice("", "contacts", fmt.Sprintf("Loaded %d contacts and groups", addedChats))
+		sm.uiHandler.SetNotice("", contactsNotice, fmt.Sprintf("Loaded %d contacts and groups", addedChats))
 	}
 
 	// The app state holds the pinned and archived state of chats, and the last
@@ -786,11 +787,15 @@ func (sm *SessionManager) setCurrentChatArchived(archive bool) {
 		return
 	}
 	chatID := sm.currentReceiver
-	for _, chat := range sm.db.GetChatIds() {
-		if chat.Id == chatID && chat.InArchive == archive {
-			sm.uiHandler.PrintText(sm.db.GetIdName(chatID) + " is " + state + " already")
-			return
+	var chat Chat
+	for _, listed := range sm.db.GetChatIds() {
+		if listed.Id == chatID {
+			chat = listed
 		}
+	}
+	if chat.Id != "" && chat.InArchive == archive {
+		sm.uiHandler.PrintText(sm.db.GetIdName(chatID) + " is " + state + " already")
+		return
 	}
 	target, err := sm.phoneChatJID(chatID)
 	if err != nil {
@@ -816,25 +821,22 @@ func (sm *SessionManager) setCurrentChatArchived(archive bool) {
 	}
 
 	// the phone's change comes back as app state events too, show it right away
-	if archive {
-		archivedAt := lastTime.Unix()
-		for _, chat := range sm.db.GetChatIds() {
-			if chat.Id == chatID {
-				archivedAt = max(archivedAt, chat.LastMessage, chat.LastIncoming)
-			}
-		}
-		sm.db.SetChatArchived(chatID, true, archivedAt)
-		sm.db.SetChatPinned(chatID, false, 0)
-	} else {
+	if !archive {
 		sm.db.SetChatArchived(chatID, false, 0)
+		sm.uiHandler.SetChats(sm.db.GetChatIds())
+		sm.uiHandler.PrintText(done + " " + sm.db.GetIdName(chatID))
+		return
 	}
+	sm.db.SetChatArchived(chatID, true, max(lastTime.Unix(), chat.LastMessage, chat.LastIncoming))
+	sm.db.SetChatPinned(chatID, false, 0)
 	sm.uiHandler.SetChats(sm.db.GetChatIds())
 	sm.uiHandler.PrintText(done + " " + sm.db.GetIdName(chatID))
-	if archive {
-		// like on the phone, an archived chat is left
-		sm.uiHandler.CloseChat(chatID)
-	}
+	// like on the phone, an archived chat is left
+	sm.uiHandler.CloseChat(chatID)
 }
+
+// errAppStateRepairing is returned by sendAppState while the phone repairs the chat settings
+var errAppStateRepairing = errors.New("the chat settings are being repaired by your phone, try again in a moment")
 
 // sendAppState sends a change of chat settings to the phone. When the phone
 // changed them too, the server refuses the change until whatsmeow has caught
@@ -842,19 +844,18 @@ func (sm *SessionManager) setCurrentChatArchived(archive bool) {
 // don't add up, the phone is asked to repair them, see recoverAppState.
 func (sm *SessionManager) sendAppState(patch appstate.PatchInfo) error {
 	ctx := context.Background()
-	repairing := errors.New("the chat settings are being repaired by your phone, try again in a moment")
 	err := sm.client.SendAppState(ctx, patch)
 	if err == nil {
 		return nil
 	} else if sm.recoverAppState(err, patch.Type) {
-		return repairing
+		return errAppStateRepairing
 	}
 	if sm.Log != nil {
 		sm.Log.Warnf("Sending %s failed, syncing it and retrying: %v", patch.Type, err)
 	}
 	if syncErr := sm.client.FetchAppState(ctx, patch.Type, false, false); syncErr != nil {
 		if sm.recoverAppState(syncErr, patch.Type) {
-			return repairing
+			return errAppStateRepairing
 		}
 		return fmt.Errorf("%v (syncing failed too: %v)", err, syncErr)
 	}
@@ -875,12 +876,10 @@ func (sm *SessionManager) markChatRead(chatID string) (int, error) {
 
 	unreadMessages := sm.db.MarkChatRead(chatID)
 	sm.uiHandler.SetChats(sm.db.GetChatIds())
-	if len(unreadMessages) > 0 {
-		sm.showIfOpen(chatID) // no longer shown as unread
-	}
 	if len(unreadMessages) == 0 {
 		return 0, nil
 	}
+	sm.showIfOpen(chatID) // no longer shown as unread
 
 	type senderBatch struct {
 		sender    types.JID
@@ -890,7 +889,7 @@ func (sm *SessionManager) markChatRead(chatID string) (int, error) {
 	batches := make(map[string]*senderBatch)
 	for _, msg := range unreadMessages {
 		sender := chatJID
-		if strings.Contains(chatID, GROUPSUFFIX) && msg.SenderId != "" {
+		if isGroupID(chatID) && msg.SenderId != "" {
 			sender, err = types.ParseJID(msg.SenderId)
 			if err != nil {
 				continue
@@ -1019,9 +1018,7 @@ func (sm *SessionManager) revokeMessage(params []string) {
 		return
 	}
 	sm.db.MarkMessageRevoked(msg.Id)
-	if sm.currentReceiver == msg.ChatId {
-		sm.uiHandler.NewScreen(sm.getMessages(msg.ChatId))
-	}
+	sm.showIfOpen(msg.ChatId)
 	sm.uiHandler.PrintText("revoked: " + msg.Id)
 }
 
@@ -1058,8 +1055,8 @@ func (sm *SessionManager) sendReaction(params []string) {
 		sm.uiHandler.PrintError(fmt.Errorf("failed to send reaction: %v", err))
 		return
 	}
-	if chatID, ok := sm.db.SetReaction(msg.Id, ReactorMe, reaction, time.Now().Unix()); ok && chatID == sm.currentReceiver {
-		sm.uiHandler.NewScreen(sm.getMessages(chatID))
+	if chatID, ok := sm.db.SetReaction(msg.Id, ReactorMe, reaction, time.Now().Unix()); ok {
+		sm.showIfOpen(chatID)
 	}
 }
 
@@ -1081,13 +1078,7 @@ func (sm *SessionManager) reactionInfo(messageID string) string {
 func (sm *SessionManager) namedReactions(msg Message) []string {
 	reactions := make([]string, 0, len(msg.Reactions))
 	for reactor, reaction := range msg.Reactions {
-		name := "You"
-		if reactor != ReactorMe {
-			name = reactor
-			if jid, err := types.ParseJID(reactor); err == nil {
-				_, name, _ = sm.contactNames(jid)
-			}
-		}
+		name, _ := sm.reactorNames(reactor)
 		reactions = append(reactions, reaction+" "+name)
 	}
 	sort.Strings(reactions)
@@ -1096,14 +1087,21 @@ func (sm *SessionManager) namedReactions(msg Message) []string {
 
 // ShortName returns the short name to show for a user, "You" for yourself.
 func (sm *SessionManager) ShortName(id string) string {
-	if id == ReactorMe {
-		return "You"
+	_, short := sm.reactorNames(id)
+	return short
+}
+
+// reactorNames returns the name and short name of who reacted, see
+// Message.Reactions, "You" for yourself.
+func (sm *SessionManager) reactorNames(reactor string) (string, string) {
+	if reactor == ReactorMe {
+		return "You", "You"
 	}
-	if jid, err := types.ParseJID(id); err == nil {
-		_, _, short := sm.contactNames(jid)
-		return short
+	if jid, err := types.ParseJID(reactor); err == nil {
+		_, name, short := sm.contactNames(jid)
+		return name, short
 	}
-	return id
+	return reactor, reactor
 }
 
 // reactorID returns the key of a reaction in Message.Reactions
@@ -1237,7 +1235,7 @@ func (sm *SessionManager) updateCurrentGroupSubject(params []string) {
 }
 
 func (sm *SessionManager) currentGroupJID() (types.JID, error) {
-	if sm.currentReceiver == "" || !strings.Contains(sm.currentReceiver, GROUPSUFFIX) {
+	if sm.currentReceiver == "" || !isGroupID(sm.currentReceiver) {
 		return types.JID{}, errors.New("not a group")
 	}
 	return types.ParseJID(sm.currentReceiver)
@@ -1390,7 +1388,7 @@ func (sm *SessionManager) outgoingMessageFromSendResponse(resp whatsmeow.SendRes
 	}
 
 	contactID := chatID
-	if strings.Contains(chatID, GROUPSUFFIX) {
+	if isGroupID(chatID) {
 		contactID = selfID
 	}
 
@@ -1409,27 +1407,6 @@ func (sm *SessionManager) outgoingMessageFromSendResponse(resp whatsmeow.SendRes
 		FileName:     fileName,
 		RawMessage:   raw,
 	}
-}
-
-// notificationText returns the title and text of the notification for a new
-// message: messages in groups are titled with the group and name the sender
-func notificationText(msg Message, chatName string) (string, string) {
-	if strings.Contains(msg.ChatId, GROUPSUFFIX) {
-		return chatName, msg.ContactShort + ": " + msg.Text
-	}
-	return msg.ContactShort, msg.Text
-}
-
-// notify shows a desktop notification with an icon, the app's if empty, see
-// desktopNotify, or rings the terminal bell
-func notify(title, message, icon string) error {
-	if !config.Config.General.EnableNotifications {
-		return nil
-	} else if config.Config.General.UseTerminalBell {
-		_, err := fmt.Printf("\a")
-		return err
-	}
-	return desktopNotify(title, message, icon)
 }
 
 type eventHandler struct {
@@ -1485,10 +1462,7 @@ func (eh *eventHandler) Handle(evt interface{}) {
 			if readUntil <= 0 {
 				readUntil = v.Timestamp.Unix()
 			}
-			if eh.sm.db.MarkChatReadUntil(eh.sm.chatIdForJID(v.JID), readUntil) {
-				eh.sm.showIfOpen(eh.sm.chatIdForJID(v.JID))
-			}
-			eh.sm.db.ClearUnreadReactions(eh.sm.chatIdForJID(v.JID), max(readUntil, v.Timestamp.Unix()))
+			eh.sm.chatReadElsewhere(eh.sm.chatIdForJID(v.JID), readUntil, max(readUntil, v.Timestamp.Unix()))
 		}
 		eh.sm.updateChatActivity(v.JID, v.Action.GetMessageRange(), v.FromFullSync)
 	case *events.Archive:
@@ -1523,8 +1497,9 @@ func (eh *eventHandler) Handle(evt interface{}) {
 		eh.sm.connection.connected()
 	case *events.LoggedOut:
 		eh.sm.StatusChannel <- StatusMsg{false, nil}
-		eh.sm.uiHandler.SetNotice("", connectionNotice, "Logged out: "+fmt.Sprintf("%v", v.Reason))
-		eh.sm.connection.loggedOut(fmt.Sprintf("%v", v.Reason))
+		reason := v.Reason.String()
+		eh.sm.uiHandler.SetNotice("", connectionNotice, "Logged out: "+reason)
+		eh.sm.connection.loggedOut(reason)
 	}
 }
 
@@ -1563,9 +1538,7 @@ func (sm *SessionManager) finishOfflineSync() {
 	}
 	sm.updateActivity()
 	sm.uiHandler.SetChats(sm.db.GetChatIds())
-	if sm.currentReceiver != "" {
-		sm.uiHandler.NewScreen(sm.getMessages(sm.currentReceiver))
-	}
+	sm.showIfOpen(sm.currentReceiver)
 }
 
 // handleReceipt marks the messages of a chat as read when they were read on the
@@ -1585,19 +1558,27 @@ func (eh *eventHandler) handleReceipt(evt *events.Receipt) {
 		// the messages weren't received yet, but were sent before they were read
 		readUntil = evt.Timestamp.Unix()
 	}
-	chatID := eh.sm.chatIdForJID(evt.Chat)
 	// the reactions until then were seen too
-	seen := eh.sm.db.ClearUnreadReactions(chatID, evt.Timestamp.Unix())
-	if (eh.sm.db.MarkChatReadUntil(chatID, readUntil) || seen) && eh.sm.offlineMessages.Load() == 0 {
-		eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
-		eh.sm.showIfOpen(chatID)
+	eh.sm.chatReadElsewhere(eh.sm.chatIdForJID(evt.Chat), readUntil, evt.Timestamp.Unix())
+}
+
+// chatReadElsewhere records that a chat was read on the phone or another
+// device: its messages until readUntil, and the reactions given until
+// seenUntil. The change is shown unless the messages from while offline are
+// still arriving, see finishOfflineSync.
+func (sm *SessionManager) chatReadElsewhere(chatID string, readUntil, seenUntil int64) {
+	seen := sm.db.ClearUnreadReactions(chatID, seenUntil)
+	read := sm.db.MarkChatReadUntil(chatID, readUntil)
+	if (seen || read) && sm.offlineMessages.Load() == 0 {
+		sm.uiHandler.SetChats(sm.db.GetChatIds())
+		sm.showIfOpen(chatID)
 	}
 }
 
 // showIfOpen shows the messages of a chat again if it is open, e.g. when they
 // were read
 func (sm *SessionManager) showIfOpen(chatID string) {
-	if chatID == sm.currentReceiver {
+	if chatID != "" && chatID == sm.currentReceiver {
 		sm.uiHandler.NewScreen(sm.getMessages(chatID))
 	}
 }
@@ -1624,7 +1605,7 @@ func (eh *eventHandler) handleLiveMessage(evt *events.Message) {
 	case "react":
 		chatID, ok := eh.sm.db.SetReaction(msg.Id, msg.SenderId, msg.Text, int64(msg.Timestamp))
 		if ok && chatID == eh.sm.currentReceiver && show {
-			eh.sm.uiHandler.NewScreen(eh.sm.getMessages(chatID))
+			eh.sm.showIfOpen(chatID)
 		} else if ok && eh.isNewReaction(msg) {
 			eh.sm.db.AddUnreadReaction(chatID, int64(msg.Timestamp))
 			if show {
@@ -1633,8 +1614,8 @@ func (eh *eventHandler) handleLiveMessage(evt *events.Message) {
 		}
 		return
 	case "revoke":
-		if eh.sm.db.MarkMessageRevoked(msg.Id) && eh.sm.currentReceiver == msg.ChatId && show {
-			eh.sm.uiHandler.NewScreen(eh.sm.getMessages(msg.ChatId))
+		if eh.sm.db.MarkMessageRevoked(msg.Id) && show {
+			eh.sm.showIfOpen(msg.ChatId)
 		}
 		if show {
 			eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
@@ -1780,13 +1761,11 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 	}
 
 	eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
-	if eh.sm.currentReceiver != "" {
-		eh.sm.uiHandler.NewScreen(eh.sm.getMessages(eh.sm.currentReceiver))
-	}
+	eh.sm.showIfOpen(eh.sm.currentReceiver)
 	if cs := eh.sm.getChatSync(); cs != nil {
 		cs.onHistory(evt.Data, chatIDs, messageCount)
 	}
-	if evt.Data.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND {
+	if onDemand {
 		answered := chatIDs
 		// an answer without messages doesn't say for which chat
 		if len(chatIDs) == 0 {
@@ -1976,7 +1955,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (sm *SessionManager) downloadMessage(msg Message, preview bool) (string, error) {
+func (sm *SessionManager) downloadMessage(msg Message, open bool) (string, error) {
 	if sm.client == nil || !sm.client.IsConnected() {
 		return "", errors.New("not connected to WhatsApp")
 	}
@@ -1987,7 +1966,7 @@ func (sm *SessionManager) downloadMessage(msg Message, preview bool) (string, er
 	}
 
 	baseDir := config.Config.General.DownloadPath
-	if preview {
+	if open { // to look at, not to keep
 		baseDir = config.Config.General.PreviewPath
 	}
 	if err = os.MkdirAll(baseDir, 0o755); err != nil {

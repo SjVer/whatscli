@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"sort"
@@ -119,7 +120,7 @@ func (md *MessageDatabase) UpdateChatLastMessage(chatID string, timestamp int64)
 
 	chat, ok := md.chats[chatID]
 	if !ok {
-		chat = Chat{Id: chatID, IsGroup: strings.Contains(chatID, GROUPSUFFIX)}
+		chat = Chat{Id: chatID, IsGroup: isGroupID(chatID)}
 	}
 	if timestamp > chat.LastMessage {
 		chat.LastMessage = timestamp
@@ -234,7 +235,7 @@ func (md *MessageDatabase) updateChatLocked(chatID string, update func(chat *Cha
 
 	chat, ok := md.chats[chatID]
 	if !ok {
-		chat = Chat{Id: chatID, IsGroup: strings.Contains(chatID, GROUPSUFFIX)}
+		chat = Chat{Id: chatID, IsGroup: isGroupID(chatID)}
 	}
 	update(&chat)
 	md.chats[chatID] = chat
@@ -330,8 +331,10 @@ func (md *MessageDatabase) AddMessage(msg Message, markUnread bool) bool {
 		if len(existing.Mentions) == 0 && len(msg.Mentions) > 0 {
 			existing.Mentions = msg.Mentions
 		}
+		wasUnread := existing.Unread
 		existing.Unread = existing.Unread || (markUnread && !md.readOnOtherDeviceLocked(existing))
-		markUnread = existing.Unread && !md.messagesById[msg.Id].Unread
+		// counted once
+		markUnread = existing.Unread && !wasUnread
 		md.messagesById[msg.Id] = existing
 		md.replaceMessageLocked(existing)
 		md.updateChatFromMessageLocked(existing, markUnread)
@@ -369,7 +372,7 @@ func (md *MessageDatabase) updateChatFromMessageLocked(msg Message, markUnread b
 	if !exists {
 		chat = Chat{
 			Id:      msg.ChatId,
-			IsGroup: strings.Contains(msg.ChatId, GROUPSUFFIX),
+			IsGroup: isGroupID(msg.ChatId),
 			Name:    msg.ContactName,
 		}
 	}
@@ -497,25 +500,14 @@ func (md *MessageDatabase) MarkChatReadUntil(chatID string, until int64) bool {
 	md.messageLock.Lock()
 	defer md.messageLock.Unlock()
 
-	changed := false
-	unread := 0
-	msgs := md.messages[chatID]
-	for idx, msg := range msgs {
-		if msg.Unread && int64(msg.Timestamp) <= until {
-			msg.Unread = false
-			msgs[idx] = msg
-			md.messagesById[msg.Id] = msg
-			changed = true
-		} else if msg.Unread {
-			unread++
-		}
-	}
+	cleared, unread := md.clearUnreadLocked(chatID, until)
+	changed := len(cleared) > 0
 
 	md.chatLock.Lock()
 	defer md.chatLock.Unlock()
 	chat, ok := md.chats[chatID]
 	if !ok || until <= chat.ReadUntil && !changed {
-		return false
+		return changed
 	}
 	chat.ReadUntil = max(chat.ReadUntil, until)
 	// the unread count may be of messages that aren't in memory, see UpdateChatUnread
@@ -528,24 +520,33 @@ func (md *MessageDatabase) MarkChatReadUntil(chatID string, until int64) bool {
 	return changed
 }
 
+// clearUnreadLocked marks the unread messages of a chat until the time as read,
+// and returns them, and how many are still unread. Requires messageLock.
+func (md *MessageDatabase) clearUnreadLocked(chatID string, until int64) ([]Message, int) {
+	var cleared []Message
+	remaining := 0
+	msgs := md.messages[chatID]
+	for idx, msg := range msgs {
+		if !msg.Unread {
+			continue
+		} else if int64(msg.Timestamp) > until {
+			remaining++
+			continue
+		}
+		cleared = append(cleared, msg)
+		msg.Unread = false
+		msgs[idx] = msg
+		md.messagesById[msg.Id] = msg
+	}
+	return cleared, remaining
+}
+
 // MarkChatRead clears unread state for the given chat and returns the unread messages that were cleared.
 func (md *MessageDatabase) MarkChatRead(chatID string) []Message {
 	md.messageLock.Lock()
 	defer md.messageLock.Unlock()
 
-	msgs := md.messages[chatID]
-	cleared := make([]Message, 0)
-	for idx, msg := range msgs {
-		if msg.Unread {
-			cleared = append(cleared, msg)
-			msg.Unread = false
-			msgs[idx] = msg
-			stored := md.messagesById[msg.Id]
-			stored.Unread = false
-			md.messagesById[msg.Id] = stored
-		}
-	}
-	md.messages[chatID] = msgs
+	cleared, _ := md.clearUnreadLocked(chatID, math.MaxInt64)
 
 	md.chatLock.Lock()
 	if chat, ok := md.chats[chatID]; ok {
@@ -675,15 +676,12 @@ func (md *MessageDatabase) UpdateMessageTexts(text func(msg Message) (string, []
 
 	md.messageLock.Lock()
 	defer md.messageLock.Unlock()
-	for chatID, chatMsgs := range md.messages {
-		for idx, msg := range chatMsgs {
-			if updated, ok := texts[msg.Id]; ok {
-				msg.Text, msg.Mentions = updated.text, updated.mentions
-				chatMsgs[idx] = msg
-				md.messagesById[msg.Id] = msg
-			}
+	for id, updated := range texts {
+		if msg, ok := md.messagesById[id]; ok {
+			msg.Text, msg.Mentions = updated.text, updated.mentions
+			md.messagesById[id] = msg
+			md.replaceMessageLocked(msg)
 		}
-		md.messages[chatID] = chatMsgs
 	}
 	md.chatLock.Lock()
 	md.scheduleSaveLocked()

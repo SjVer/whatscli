@@ -12,22 +12,19 @@ import (
 // 20 to 30 seconds, so this shows whether the connection still works.
 type activityLogger struct {
 	waLog.Logger
-	// called for everything logged, only set for the "Recv" logger
-	onReceive func()
-	received  func()
+	// called when data was received
+	received func()
+	// whether this is the "Recv" logger, whose debug output is what was received
+	isRecv bool
 }
 
 func (l activityLogger) Sub(module string) waLog.Logger {
-	sub := activityLogger{Logger: l.Logger.Sub(module), received: l.received}
-	if module == "Recv" {
-		sub.onReceive = l.received
-	}
-	return sub
+	return activityLogger{Logger: l.Logger.Sub(module), received: l.received, isRecv: module == "Recv"}
 }
 
 func (l activityLogger) Debugf(msg string, args ...any) {
-	if l.onReceive != nil {
-		l.onReceive()
+	if l.isRecv {
+		l.received()
 	}
 	l.Logger.Debugf(msg, args...)
 }
