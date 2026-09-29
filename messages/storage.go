@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -198,6 +199,7 @@ func (md *MessageDatabase) MergeChat(from, to string) {
 	}
 	dst.Unread = max(dst.Unread, src.Unread)
 	dst.ReadUntil = max(dst.ReadUntil, src.ReadUntil)
+	dst.UnreadReactions = append(dst.UnreadReactions, src.UnreadReactions...)
 	delete(md.chats, from)
 	md.chats[to] = dst
 	md.scheduleSaveLocked()
@@ -325,6 +327,9 @@ func (md *MessageDatabase) AddMessage(msg Message, markUnread bool) bool {
 		if existing.MimeType == "" && msg.MimeType != "" {
 			existing.MimeType = msg.MimeType
 		}
+		if len(existing.Mentions) == 0 && len(msg.Mentions) > 0 {
+			existing.Mentions = msg.Mentions
+		}
 		existing.Unread = existing.Unread || (markUnread && !md.readOnOtherDeviceLocked(existing))
 		markUnread = existing.Unread && !md.messagesById[msg.Id].Unread
 		md.messagesById[msg.Id] = existing
@@ -422,6 +427,7 @@ func (md *MessageDatabase) AddChat(chat Chat) {
 			chat.LastIncoming = existing.LastIncoming
 		}
 		chat.ReadUntil = max(chat.ReadUntil, existing.ReadUntil)
+		chat.UnreadReactions = existing.UnreadReactions
 	}
 	md.chats[chat.Id] = chat
 	md.scheduleSaveLocked()
@@ -542,12 +548,45 @@ func (md *MessageDatabase) MarkChatRead(chatID string) []Message {
 	md.chatLock.Lock()
 	if chat, ok := md.chats[chatID]; ok {
 		chat.Unread = 0
+		chat.UnreadReactions = nil
 		md.chats[chatID] = chat
 	}
 	md.scheduleSaveLocked()
 	md.chatLock.Unlock()
 
 	return cleared
+}
+
+// AddUnreadReaction counts a reaction to one of the user's messages given at
+// the time as new, until the chat is read.
+func (md *MessageDatabase) AddUnreadReaction(chatID string, at int64) {
+	md.updateChatLocked(chatID, func(chat *Chat) {
+		chat.UnreadReactions = append(chat.UnreadReactions, at)
+	})
+}
+
+// ClearUnreadReactions marks the reactions given until the time as seen, e.g.
+// when the chat was read on the phone then, and returns whether there were any.
+func (md *MessageDatabase) ClearUnreadReactions(chatID string, until int64) bool {
+	md.chatLock.Lock()
+	defer md.chatLock.Unlock()
+	chat, ok := md.chats[chatID]
+	if !ok {
+		return false
+	}
+	var unread []int64
+	for _, at := range chat.UnreadReactions {
+		if at > until {
+			unread = append(unread, at)
+		}
+	}
+	if len(unread) == len(chat.UnreadReactions) {
+		return false
+	}
+	chat.UnreadReactions = unread
+	md.chats[chatID] = chat
+	md.scheduleSaveLocked()
+	return true
 }
 
 // SetReaction sets the emoji reaction of reactor to a message, an empty reaction
@@ -608,9 +647,9 @@ func withValue[T any](values map[string]T, key string, value T, remove bool) map
 	return updated
 }
 
-// UpdateMessageTexts changes the text of the messages that text returns a new
-// one for. text is called without holding the lock, as it may be slow.
-func (md *MessageDatabase) UpdateMessageTexts(text func(msg Message) (string, bool)) {
+// UpdateMessageTexts changes the text and mentions of the messages that text
+// returns new ones for. text is called without holding the lock, as it may be slow.
+func (md *MessageDatabase) UpdateMessageTexts(text func(msg Message) (string, []string, bool)) {
 	md.messageLock.RLock()
 	var msgs []Message
 	for _, chatMsgs := range md.messages {
@@ -618,10 +657,14 @@ func (md *MessageDatabase) UpdateMessageTexts(text func(msg Message) (string, bo
 	}
 	md.messageLock.RUnlock()
 
-	texts := make(map[string]string)
+	type update struct {
+		text     string
+		mentions []string
+	}
+	texts := make(map[string]update)
 	for _, msg := range msgs {
-		if newText, ok := text(msg); ok && newText != msg.Text {
-			texts[msg.Id] = newText
+		if newText, mentions, ok := text(msg); ok && (newText != msg.Text || !slices.Equal(mentions, msg.Mentions)) {
+			texts[msg.Id] = update{newText, mentions}
 		}
 	}
 	if len(texts) == 0 {
@@ -632,8 +675,8 @@ func (md *MessageDatabase) UpdateMessageTexts(text func(msg Message) (string, bo
 	defer md.messageLock.Unlock()
 	for chatID, chatMsgs := range md.messages {
 		for idx, msg := range chatMsgs {
-			if newText, ok := texts[msg.Id]; ok {
-				msg.Text = newText
+			if updated, ok := texts[msg.Id]; ok {
+				msg.Text, msg.Mentions = updated.text, updated.mentions
 				chatMsgs[idx] = msg
 				md.messagesById[msg.Id] = msg
 			}

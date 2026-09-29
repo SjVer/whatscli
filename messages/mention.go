@@ -93,12 +93,13 @@ func (sm *SessionManager) membersOf(participants []types.GroupParticipant) []Mem
 }
 
 // resolveMentions replaces @Name of the members of a group in text with how
-// WhatsApp mentions them, and returns who is mentioned.
-func resolveMentions(text string, members []Member) (string, []string) {
+// WhatsApp mentions them, and returns who is mentioned, and the mentions as
+// they were typed.
+func resolveMentions(text string, members []Member) (string, []string, []string) {
 	// longer names first, so that @Ann Lee isn't taken for @Ann
 	sorted := append([]Member(nil), members...)
 	sort.SliceStable(sorted, func(i, j int) bool { return len(sorted[i].Name) > len(sorted[j].Name) })
-	var mentioned []string
+	var mentioned, typed []string
 	for _, member := range sorted {
 		jid, err := types.ParseJID(member.Id)
 		if err != nil || !strings.Contains(text, "@"+member.Name) {
@@ -106,13 +107,16 @@ func resolveMentions(text string, members []Member) (string, []string) {
 		}
 		text = strings.ReplaceAll(text, "@"+member.Name, "@"+jid.User)
 		mentioned = append(mentioned, member.Id)
+		typed = append(typed, "@"+member.Name)
 	}
-	return text, mentioned
+	return text, mentioned, typed
 }
 
 // showMentions replaces the numbers of the mentioned people in the text of a
-// message with their names, like the phone shows them.
-func (sm *SessionManager) showMentions(text string, mentioned []string) string {
+// message with their names, like the phone shows them, and returns the
+// mentions as they are shown.
+func (sm *SessionManager) showMentions(text string, mentioned []string) (string, []string) {
+	var shown []string
 	for _, id := range mentioned {
 		jid, err := types.ParseJID(id)
 		if err != nil || jid.User == "" {
@@ -122,11 +126,16 @@ func (sm *SessionManager) showMentions(text string, mentioned []string) string {
 		if !sm.isOwnUser(jid) {
 			_, name, _ = sm.contactNames(jid)
 		}
+		mention := "@" + jid.User
 		if name != "" && !strings.Contains(name, "@") {
-			text = strings.ReplaceAll(text, "@"+jid.User, "@"+name)
+			text = strings.ReplaceAll(text, mention, "@"+name)
+			mention = "@" + name
+		}
+		if strings.Contains(text, mention) {
+			shown = append(shown, mention)
 		}
 	}
-	return text
+	return text, shown
 }
 
 // isOwnUser returns whether jid is the user, by number or LID

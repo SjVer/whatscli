@@ -78,6 +78,7 @@ type Colors struct {
 	SilentCommandText string
 	CommandText       string
 	UnreadCount       string
+	Mention           string
 	Positive          string
 	Negative          string
 }
@@ -132,6 +133,7 @@ var Config = IniFile{
 		SilentCommandText: "purple",
 		CommandText:       "blue",
 		UnreadCount:       "yellow",
+		Mention:           "dodgerblue",
 		Positive:          "green",
 		Negative:          "red",
 	},

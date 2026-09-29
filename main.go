@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -136,6 +137,7 @@ func main() {
 	app.SetAfterDrawFunc(func(screen tcell.Screen) {
 		greyOutUnfocusedPanel(screen)
 		drawEmojiPopup(screen)
+		updateTitle(screen)
 	})
 	app.EnableMouse(true)
 	// pasted text arrives in one piece, so line breaks don't send it line by line
@@ -509,6 +511,7 @@ func handleQuit(ev *tcell.EventKey) *tcell.EventKey {
 
 func handleHelp(ev *tcell.EventKey) *tcell.EventKey {
 	PrintHelp()
+	printedSinceRender = true
 	return nil
 }
 
@@ -830,6 +833,7 @@ func EnterCommand(key tcell.Key) {
 	cmdPrefix := config.Config.General.CmdPrefix
 	if sndTxt == cmdPrefix+"help" {
 		PrintHelp()
+		printedSinceRender = true
 		setInput("")
 		return
 	}
@@ -910,6 +914,7 @@ func ResetMsgSelection() {
 // prints text to the TextView
 func PrintText(txt string) {
 	fmt.Fprintln(textView, txt)
+	printedSinceRender = true
 }
 
 // prints an error to the TextView
@@ -918,6 +923,7 @@ func PrintError(err error) {
 		return
 	}
 	fmt.Fprintln(textView, "["+config.Config.Colors.Negative+"]", err.Error(), "[-]")
+	printedSinceRender = true
 }
 
 // prints an error to the TextView
@@ -1058,6 +1064,9 @@ func SetDisplayedChat(wid messages.Chat) {
 		updateChatNode(wid.Id)
 		// the message to react to is in the other chat
 		reactTarget = ""
+		// a chat opens at its newest messages, also after scrolling up in the one before
+		textView.Highlight("")
+		textView.ScrollToEnd()
 	}
 	currentReceiver = wid
 	chatMessages = nil
@@ -1147,8 +1156,20 @@ func getReactionString(msg *messages.Message, reactor string, at int64) string {
 const messageGroupGap = 2 * time.Minute
 
 // continuesGroup returns whether msg is shown in the group of the message before it
+// hasUnreadReaction returns whether one of the reactions to a message in the
+// chat is new, see messages.Chat.UnreadReactions
+func hasUnreadReaction(msg *messages.Message, chat messages.Chat) bool {
+	for _, at := range msg.ReactionTimes {
+		if slices.Contains(chat.UnreadReactions, at) {
+			return true
+		}
+	}
+	return false
+}
+
 func continuesGroup(prev *messages.Message, msg *messages.Message) bool {
-	if prev == nil || prev.FromMe != msg.FromMe || (!msg.FromMe && prev.ContactId != msg.ContactId) {
+	// unread messages start a group, so that their time shows they are unread
+	if prev == nil || prev.FromMe != msg.FromMe || (!msg.FromMe && prev.ContactId != msg.ContactId) || prev.Unread != msg.Unread {
 		return false
 	}
 	gap := time.Duration(int64(msg.Timestamp)-int64(prev.Timestamp)) * time.Second
@@ -1205,7 +1226,7 @@ func getTextMessageString(msg *messages.Message, prev *messages.Message) string 
 	colorMe := config.Config.Colors.ChatMe
 	colorContact := config.Config.Colors.ChatContact
 	out := ""
-	text := formatMarkup(msg.Text, messageSearch)
+	text := formatMarkup(msg.Text, messageSearch, msg.Mentions)
 	if msg.Forwarded {
 		text = "[" + config.Config.Colors.ForwardedText + "]" + text + "[-]"
 	}
@@ -1216,7 +1237,11 @@ func getTextMessageString(msg *messages.Message, prev *messages.Message) string 
 		if prev != nil {
 			header = "\n"
 		}
-		header += "[gray::-](" + formatMessageTime(time.Unix(int64(msg.Timestamp), 0), time.Now()) + ") "
+		timeColor := "gray"
+		if msg.Unread {
+			timeColor = config.Config.Colors.UnreadCount
+		}
+		header += "[" + timeColor + "::-](" + formatMessageTime(time.Unix(int64(msg.Timestamp), 0), time.Now()) + ") "
 		if msg.FromMe { //msg from me
 			header += "[" + colorMe + "::b]Me:[-::-]\n"
 		} else { // message from others
@@ -1229,7 +1254,11 @@ func getTextMessageString(msg *messages.Message, prev *messages.Message) string 
 	out += header + text
 	// marked so they can't be mistaken for a message that is only an emoji
 	if reactions := reactionSummary(msg.Reactions); reactions != "" {
-		out += "\n[gray::-] ↳" + reactions + "[-::-]"
+		arrow := "[gray::-] ↳"
+		if hasUnreadReaction(msg, currentReceiver) {
+			arrow = "[" + config.Config.Colors.UnreadCount + "::-] ↳[gray]"
+		}
+		out += "\n" + arrow + reactions + "[-::-]"
 	}
 	out += "[\"\"]"
 	return out
@@ -1245,6 +1274,11 @@ func (u UiHandler) NewMessage(msg messages.Message) {
 		if !messageMatches(msg, messageSearch) {
 			return
 		}
+		// the notices stay below the messages
+		if len(notices[currentReceiver.Id]) > 0 && !printedSinceRender {
+			renderMessages()
+			return
+		}
 		var prev *messages.Message
 		if endedWithReaction {
 			prev = &afterReaction
@@ -1252,7 +1286,7 @@ func (u UiHandler) NewMessage(msg messages.Message) {
 			prev = &curRegions[len(curRegions)-1]
 		}
 		endedWithReaction = false
-		PrintText(getTextMessageString(&msg, prev))
+		fmt.Fprintln(textView, getTextMessageString(&msg, prev))
 		curRegions = append(curRegions, msg)
 	})
 }
@@ -1288,6 +1322,59 @@ func renderMessages() {
 			PrintText("[::d] ~~~ no messages, press " + config.Config.Keymap.CommandBacklog + " to load backlog if available ~~~[::-]")
 		}
 	}
+	printNotices(currentReceiver.Id)
+	printedSinceRender = false
+}
+
+// printedSinceRender is whether text was printed below the messages since they
+// were shown, like the QR code or the info of a message, which showing them
+// again would remove
+var printedSinceRender bool
+
+// notice is a status line shown below the messages of a chat, see SetNotice
+type notice struct {
+	key  string
+	text string
+}
+
+// notices are the status lines of each chat, by chat ID, "" for the main
+// screen, in the order they were first shown
+var notices = map[string][]notice{}
+
+// setNotice sets the notice of a chat with the key, or removes it when text is
+// empty, and returns whether that changed anything
+func setNotice(chatID, key, text string) bool {
+	chatNotices := notices[chatID]
+	for idx, current := range chatNotices {
+		if current.key != key {
+			continue
+		}
+		if current.text == text {
+			return false
+		} else if text == "" {
+			notices[chatID] = append(chatNotices[:idx:idx], chatNotices[idx+1:]...)
+		} else {
+			chatNotices[idx].text = text
+		}
+		return true
+	}
+	if text == "" {
+		return false
+	}
+	notices[chatID] = append(chatNotices, notice{key, text})
+	return true
+}
+
+// printNotices shows the notices of a chat dim, below an empty line
+func printNotices(chatID string) {
+	if len(notices[chatID]) == 0 {
+		return
+	}
+	out := "\n"
+	for _, notice := range notices[chatID] {
+		out += "[::d]" + tview.Escape(notice.text) + "[::-]\n"
+	}
+	fmt.Fprint(textView, out)
 }
 
 // Search filters the chat list when Chats is selected, or the messages of the
@@ -1374,7 +1461,12 @@ func (u UiHandler) SetChats(ids []messages.Chat) {
 		allChats = pendingChats.chats
 		pendingChats.queued = false
 		pendingChats.lock.Unlock()
+		reactions := currentReceiver.UnreadReactions
 		renderChats()
+		// the new reactions are shown in the chat
+		if !slices.Equal(reactions, currentReceiver.UnreadReactions) && !printedSinceRender {
+			renderMessages()
+		}
 	})
 }
 
@@ -1431,6 +1523,32 @@ func renderChats() {
 	}
 }
 
+// the title of the terminal last set, see updateTitle
+var shownTitle string
+
+// windowTitle returns the title of the terminal: the number of new messages and
+// reactions in the chats that aren't archived, like the phone counts them
+func windowTitle(chats []messages.Chat) string {
+	count := 0
+	for _, chat := range chats {
+		if !chat.Hidden && !chat.InArchive {
+			count += chat.NewCount()
+		}
+	}
+	if count > 0 {
+		return fmt.Sprintf("WhatsCLI (%d)", count)
+	}
+	return "WhatsCLI"
+}
+
+// updateTitle shows the number of new messages in the terminal title, e.g. its tab
+func updateTitle(screen tcell.Screen) {
+	if title := windowTitle(allChats); title != shownTitle {
+		shownTitle = title
+		screen.SetTitle(title)
+	}
+}
+
 // chatNodeText returns the text of a chat in the chat list
 func chatNodeText(chat messages.Chat) string {
 	name := chat.Name
@@ -1443,9 +1561,9 @@ func chatNodeText(chat messages.Chat) string {
 	if drafts[chat.Id] != "" {
 		name += " ✎"
 	}
-	if chat.Unread > 0 {
+	if count := chat.NewCount(); count > 0 {
 		// bold, so that isUnreadCount can tell it from headers in the same color
-		name += " ([" + config.Config.Colors.UnreadCount + "::b]" + fmt.Sprint(chat.Unread) + "[-::-])"
+		name += " ([" + config.Config.Colors.UnreadCount + "::b]" + fmt.Sprint(count) + "[-::-])"
 	}
 	// search results show archived chats among the others
 	if chat.InArchive && chatSearch != "" {
@@ -1470,6 +1588,20 @@ func (u UiHandler) CloseChat(chatID string) {
 		if currentReceiver.Id == chatID {
 			showChatsRoot()
 			app.SetFocus(treeView)
+		}
+	})
+}
+
+// SetNotice shows a dim status line in a chat, see UiMessageHandler
+func (u UiHandler) SetNotice(chatID, key, text string) {
+	go app.QueueUpdateDraw(func() {
+		if !setNotice(chatID, key, text) || chatID != currentReceiver.Id {
+			return
+		}
+		if !printedSinceRender {
+			renderMessages()
+		} else if text != "" {
+			fmt.Fprint(textView, "[::d]"+tview.Escape(text)+"[::-]\n")
 		}
 	})
 }

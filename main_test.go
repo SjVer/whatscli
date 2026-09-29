@@ -364,3 +364,21 @@ func TestNotificationIconIsAPNG(t *testing.T) {
 		t.Fatal("expected an icon")
 	}
 }
+
+func TestWindowTitleCountsNewMessagesAndReactions(t *testing.T) {
+	chats := []messages.Chat{
+		{Id: "alice", Unread: 2, UnreadReactions: []int64{100}},
+		{Id: "bob", UnreadReactions: []int64{100, 200}},
+		{Id: "carol", Unread: 5, InArchive: true},
+		{Id: "family", Unread: 1, Hidden: true},
+	}
+	if title := windowTitle(chats); title != "WhatsCLI (5)" {
+		t.Errorf("expected 5 new, got %q", title)
+	}
+	if title := windowTitle(nil); title != "WhatsCLI" {
+		t.Errorf("expected no count without new messages, got %q", title)
+	}
+	if text := chatNodeText(chats[1]); !strings.Contains(text, "]2[") {
+		t.Errorf("expected the reactions to be counted in the chat list, got %q", text)
+	}
+}

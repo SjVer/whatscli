@@ -209,3 +209,75 @@ func TestOpenWithCommandShowsItsOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestOpeningAChatScrollsToItsNewestMessages(t *testing.T) {
+	sessionManager = &messages.SessionManager{CommandChannel: make(chan messages.Command, 10)}
+	defer func() { sessionManager = nil }()
+	textInput = newTextInput()
+	chatRoot = tview.NewTreeNode("Chats")
+	textView = tview.NewTextView().SetDynamicColors(true).SetRegions(true)
+	textView.SetRect(0, 0, 20, 3)
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(20, 3)
+	currentReceiver = messages.Chat{Id: "alice"}
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(textView, "line %d\n", i)
+	}
+	// scrolled up to read, with a message selected
+	textView.ScrollTo(0, 0)
+	textView.Highlight("1")
+
+	SetDisplayedChat(messages.Chat{Id: "bob"})
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(textView, "line %d\n", i)
+	}
+	textView.Draw(screen)
+	if row, _ := textView.GetScrollOffset(); row != 20-3+1 {
+		t.Fatalf("expected the chat to show its newest messages, it is scrolled to row %d", row)
+	}
+}
+
+func TestUnreadMessagesAndReactionsAreHighlighted(t *testing.T) {
+	unread := tcell.ColorNames[config.Config.Colors.UnreadCount]
+	currentReceiver = messages.Chat{Id: "alice", UnreadReactions: []int64{1300}}
+	read := messages.Message{Id: "1", ContactId: "alice", ContactShort: "Alice", Timestamp: 1000, Text: "old"}
+	mine := messages.Message{Id: "2", FromMe: true, Timestamp: 1100, Text: "mine",
+		Reactions: map[string]string{"alice": "👍"}, ReactionTimes: map[string]int64{"alice": 1300}}
+	fresh := messages.Message{Id: "3", ContactId: "alice", ContactShort: "Alice", Timestamp: 1200, Text: "new", Unread: true}
+	screen := drawText(t, getTextMessageString(&read, nil)+"\n"+getTextMessageString(&fresh, &read))
+	colorAt := func(x, y int) tcell.Color {
+		fg, _, _ := styleAt(screen, x, y).Decompose()
+		return fg
+	}
+	// the read message, then an empty line and the unread one with its own header
+	if colorAt(0, 0) == unread {
+		t.Error("expected the time of a read message not to be highlighted")
+	}
+	if r, _, _, _ := screen.GetContent(0, 3); r != '(' || colorAt(0, 3) != unread {
+		t.Errorf("expected the unread message to have its own highlighted time, got %c", r)
+	}
+
+	screen = drawText(t, getTextMessageString(&mine, nil))
+	found := false
+	for x := 0; x < 10; x++ {
+		if r, _, _, _ := screen.GetContent(x, 2); r == '↳' {
+			found = true
+			if colorAt(x, 2) != unread {
+				t.Error("expected the arrow of a new reaction to be highlighted")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected the reactions below the message")
+	}
+	currentReceiver = messages.Chat{Id: "alice"}
+	screen = drawText(t, getTextMessageString(&mine, nil))
+	for x := 0; x < 10; x++ {
+		if r, _, _, _ := screen.GetContent(x, 2); r == '↳' && colorAt(x, 2) == unread {
+			t.Error("expected the arrow of seen reactions not to be highlighted")
+		}
+	}
+}

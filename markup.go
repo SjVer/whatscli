@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"unicode"
+
+	"github.com/normen/whatscli/config"
 )
 
 // WhatsApp text formatting: *bold*, _italic_, ~strikethrough~, and `code` or
@@ -17,9 +19,9 @@ type markupSpan struct {
 	attributes string
 }
 
-// formatMarkup escapes text for the message panel, shows its formatting, and
-// highlights where it contains the search
-func formatMarkup(text string, search string) string {
+// formatMarkup escapes text for the message panel, shows its formatting and
+// mentions, and highlights where it contains the search
+func formatMarkup(text string, search string, mentions []string) string {
 	var spans []markupSpan
 	parseMarkup([]rune(text), "", &spans)
 	out := ""
@@ -34,12 +36,33 @@ func formatMarkup(text string, search string) string {
 			}
 			current = span.attributes
 		}
-		out += highlightSearch(span.text, search)
+		out += highlightMentions(span.text, search, mentions)
 	}
 	if current != "" {
 		out += "[::-]"
 	}
 	return out
+}
+
+// highlightMentions escapes text for the message panel, and colors the mentions
+// in it, like @Alice, and where it contains the search
+func highlightMentions(text, search string, mentions []string) string {
+	out := ""
+	for {
+		// the first mention, the longest one there, so that @Ann Lee isn't taken for @Ann
+		at, length := -1, 0
+		for _, mention := range mentions {
+			if idx := strings.Index(text, mention); idx >= 0 && (at < 0 || idx < at || idx == at && len(mention) > length) {
+				at, length = idx, len(mention)
+			}
+		}
+		if at < 0 {
+			return out + highlightSearch(text, search)
+		}
+		out += highlightSearch(text[:at], search) +
+			"[" + config.Config.Colors.Mention + "]" + highlightSearch(text[at:at+length], search) + "[-]"
+		text = text[at+length:]
+	}
 }
 
 // parseMarkup splits text into spans with the formatting of their markers, which

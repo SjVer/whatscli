@@ -22,6 +22,9 @@ type historyRequests struct {
 	loaded map[string]bool
 }
 
+// historyNotice is the key of the notices about loading a chat from the phone
+const historyNotice = "history"
+
 // errNoKnownMessage is returned by RequestChatHistory for a chat without messages in memory
 var errNoKnownMessage = errors.New("no message of this chat is known yet, it loads once a message arrives or after /relink")
 
@@ -38,7 +41,7 @@ func (sm *SessionManager) loadChatOnce(chatID string) {
 	if errors.Is(err, errNoKnownMessage) {
 		return // e.g. a contact that was never written to
 	} else if err != nil {
-		sm.uiHandler.PrintText(err.Error())
+		sm.uiHandler.SetNotice(chatID, historyNotice, err.Error())
 		return
 	}
 	sm.history.lock.Lock()
@@ -84,11 +87,12 @@ func (sm *SessionManager) RequestChatHistory(chatID string) error {
 	}
 	sm.history.pending[chatID] = time.AfterFunc(historyTimeout, func() {
 		if sm.finishHistoryRequest(chatID) {
-			sm.uiHandler.PrintText(fmt.Sprintf("Your phone didn't send messages for %s, is it online?", sm.db.GetIdName(chatID)))
+			sm.uiHandler.SetNotice(chatID, historyNotice, "Your phone didn't send older messages, is it online?")
 		}
 	})
 	sm.history.lock.Unlock()
 	sm.updateActivity()
+	sm.uiHandler.SetNotice(chatID, historyNotice, "")
 
 	count := historyCount()
 	if sm.Log != nil {
@@ -138,8 +142,8 @@ func historyCount() int {
 	return 50 // recommended by whatsmeow
 }
 
-// finishAllHistoryRequests marks all requests as answered.
-func (sm *SessionManager) finishAllHistoryRequests() {
+// finishAllHistoryRequests marks all requests as answered, and returns their chats.
+func (sm *SessionManager) finishAllHistoryRequests() []string {
 	sm.history.lock.Lock()
 	chatIDs := make([]string, 0, len(sm.history.pending))
 	for chatID := range sm.history.pending {
@@ -149,6 +153,7 @@ func (sm *SessionManager) finishAllHistoryRequests() {
 	for _, chatID := range chatIDs {
 		sm.finishHistoryRequest(chatID)
 	}
+	return chatIDs
 }
 
 // HistoryPending returns whether messages of a chat were requested and not received yet.

@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/normen/whatscli/config"
+)
 
 func TestFormatMarkup(t *testing.T) {
 	tests := []struct {
@@ -27,14 +31,23 @@ func TestFormatMarkup(t *testing.T) {
 		{"*[red]*", "[::b][red[][::-]"},
 	}
 	for _, test := range tests {
-		if actual := formatMarkup(test.text, ""); actual != test.expected {
+		if actual := formatMarkup(test.text, "", nil); actual != test.expected {
 			t.Errorf("%q: expected %q, got %q", test.text, test.expected, actual)
 		}
 	}
 }
 
 func TestFormatMarkupHighlightsSearch(t *testing.T) {
-	if actual := formatMarkup("*big cat*", "cat"); actual != "[::b]big [black:yellow]cat[-:-][::-]" {
+	if actual := formatMarkup("*big cat*", "cat", nil); actual != "[::b]big [black:yellow]cat[-:-][::-]" {
 		t.Fatalf("unexpected result %q", actual)
+	}
+}
+
+func TestMentionsAreHighlighted(t *testing.T) {
+	color := config.Config.Colors.Mention
+	actual := formatMarkup("hi @Ann Lee and *@Bob*", "", []string{"@Ann", "@Ann Lee", "@Bob"})
+	expected := "hi [" + color + "]@Ann Lee[-] and [::b][" + color + "]@Bob[-][::-]"
+	if actual != expected {
+		t.Errorf("expected %q, got %q", expected, actual)
 	}
 }

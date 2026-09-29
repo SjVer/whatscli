@@ -14,6 +14,10 @@ type UiMessageHandler interface {
 	SetChats([]Chat)
 	PrintError(error)
 	PrintText(string)
+	// SetNotice shows a dim status line below the messages of a chat, or on the
+	// main screen for chatID "", which replaces the one with the same key. An
+	// empty text removes it.
+	SetNotice(chatID, key, text string)
 	SetStatus(SessionStatus)
 	// OpenFile opens a file or URL with a command, or the default app if it is empty
 	OpenFile(target string, command string)
@@ -69,6 +73,8 @@ type Message struct {
 	MimeType     string
 	FileName     string
 	Unread       bool
+	// the mentions in Text as they are shown, like @Alice
+	Mentions []string `json:",omitempty"`
 	RawMessage   *waProto.Message `json:"-"` // saved as SavedMessage.Raw
 	// emoji reactions by who reacted, see ReactorMe, and when they were given
 	Reactions     map[string]string `json:",omitempty"`
@@ -99,6 +105,8 @@ type Chat struct {
 	Archived bool
 	// time of the last message that wasn't sent by the user
 	LastIncoming int64
+	// when the reactions to the user's messages that weren't seen yet were given
+	UnreadReactions []int64 `json:",omitempty"`
 	// time until which the chat was read on the phone or another device
 	ReadUntil int64 `json:",omitempty"`
 	// time of the last message when the chat was archived
@@ -113,6 +121,11 @@ type Chat struct {
 	Hidden bool `json:"-"`
 	// set by GetChatIds for chats that are still archived, see GetChatIds
 	InArchive bool `json:"-"`
+}
+
+// NewCount returns how many new messages and reactions to the user's messages a chat has
+func (chat Chat) NewCount() int {
+	return chat.Unread + len(chat.UnreadReactions)
 }
 
 type Contact struct {
