@@ -33,7 +33,7 @@ import (
 //go:embed icon.png
 var notificationIcon []byte
 
-var VERSION string = "v1.1.6"
+var VERSION string = "v2.0.0"
 
 var currentReceiver messages.Chat = messages.Chat{}
 var curRegions []messages.Message
