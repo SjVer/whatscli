@@ -753,6 +753,7 @@ func PrintHelp() {
 	} else {
 		fmt.Fprintln(textView, " :name: shortcodes are off, see emoji_shortcodes in the config file")
 	}
+	fmt.Fprintln(textView, "[::b] @na[::-] = Mention a group member, suggested like emoji")
 	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "[-::-]Message panel[-::-]")
 	fmt.Fprintln(textView, "[::b] Up/Down[::-] = select message")

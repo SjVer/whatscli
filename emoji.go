@@ -13,6 +13,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/kyokomi/emoji/v2"
 	"github.com/normen/whatscli/config"
+	"github.com/normen/whatscli/messages"
 	"github.com/rivo/tview"
 	"github.com/rivo/uniseg"
 )
@@ -207,9 +208,12 @@ func saveRecentEmoji() {
 // maxEmojiSuggestions is how many suggestions the popup shows
 const maxEmojiSuggestions = 8
 
-// emojiPopup shows suggestions while a shortcode is typed in the input
+// emojiPopup shows suggestions while a shortcode is typed in the input, or
+// the members of a group while a mention is, see mentionQueryAt
 var emojiPopup struct {
 	suggestions []emojiCode
+	// whether the suggestions are members to mention, by name
+	mentions bool
 	selected    int
 	// where the colon of the shortcode is in the input, and what was typed after it
 	start int
@@ -227,20 +231,18 @@ func closeEmojiPopup() {
 	emojiPopup.suggestions = nil
 }
 
-// updateEmojiSuggestions shows suggestions for the shortcode typed before the
-// cursor, or replaces it with its emoji when its closing colon was typed
+// updateEmojiSuggestions shows suggestions for the shortcode or mention typed
+// before the cursor, or replaces a shortcode with its emoji when its closing
+// colon was typed
 func updateEmojiSuggestions() {
-	if !config.Config.General.EmojiShortcodes {
-		closeEmojiPopup()
-		return
-	}
 	text := textInput.GetText()
 	selected, cursor, _ := textInput.GetSelection()
 	if selected != "" {
 		closeEmojiPopup()
 		return
 	}
-	if cursor > 0 && text[cursor-1] == ':' {
+	shortcodes := config.Config.General.EmojiShortcodes
+	if shortcodes && cursor > 0 && text[cursor-1] == ':' {
 		if start, query, ok := emojiQueryAt(text, cursor-1); ok {
 			if value, known := emojiByName[query]; known {
 				useEmoji(query)
@@ -251,16 +253,28 @@ func updateEmojiSuggestions() {
 		}
 	}
 	start, query, ok := emojiQueryAt(text, cursor)
+	mentions := false
+	if !ok || !shortcodes {
+		start, query, ok = mentionQueryAt(text, cursor)
+		mentions = true
+	}
 	if !ok || start == emojiPopup.dismissed {
 		closeEmojiPopup()
 		return
 	}
 	emojiPopup.dismissed = -1
-	if start != emojiPopup.start || query != emojiPopup.query {
+	if start != emojiPopup.start || query != emojiPopup.query || mentions != emojiPopup.mentions {
 		emojiPopup.selected = 0
 	}
-	emojiPopup.start, emojiPopup.query = start, query
-	emojiPopup.suggestions = matchEmoji(query, maxEmojiSuggestions)
+	emojiPopup.start, emojiPopup.query, emojiPopup.mentions = start, query, mentions
+	if mentions && sessionManager != nil {
+		emojiPopup.suggestions = matchMembers(sessionManager.GroupMembers(currentReceiver.Id), query, maxEmojiSuggestions)
+	} else if mentions {
+		emojiPopup.suggestions = nil
+	} else {
+		emojiPopup.suggestions = matchEmoji(query, maxEmojiSuggestions)
+	}
+	emojiPopup.selected = min(emojiPopup.selected, max(0, len(emojiPopup.suggestions)-1))
 }
 
 // cycleEmoji selects the next suggestion, or the previous one with a negative step
@@ -274,6 +288,10 @@ func acceptEmoji() {
 	code := emojiPopup.suggestions[emojiPopup.selected]
 	_, cursor, _ := textInput.GetSelection()
 	closeEmojiPopup()
+	if emojiPopup.mentions {
+		textInput.Replace(emojiPopup.start, cursor, "@"+code.name+" ")
+		return
+	}
 	useEmoji(code.name)
 	textInput.Replace(emojiPopup.start, cursor, code.emoji)
 }
@@ -310,6 +328,9 @@ func drawEmojiPopup(screen tcell.Screen) {
 	width := 0
 	for _, code := range emojiPopup.suggestions {
 		item := code.emoji + "  " + code.name
+		if emojiPopup.mentions {
+			item = "@" + code.name
+		}
 		list.AddItem(item, "", 0, nil)
 		width = max(width, uniseg.StringWidth(item))
 	}
@@ -326,4 +347,49 @@ func drawEmojiPopup(screen tcell.Screen) {
 	y := max(0, inputY+cursorRow-offsetRow-height)
 	list.SetRect(x, y, width, height)
 	list.Draw(screen)
+}
+
+// mentionQueryAt returns the name being typed after @ before the cursor, like
+// "al" in "hi @al", and where its @ is. It starts at the start of a word, so
+// that e-mail addresses don't.
+func mentionQueryAt(text string, cursor int) (int, string, bool) {
+	start := cursor
+	for start > 0 {
+		r, size := utf8.DecodeLastRuneInString(text[:start])
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			break
+		}
+		start -= size
+	}
+	if start == 0 || text[start-1] != '@' {
+		return 0, "", false
+	}
+	at := start - 1
+	if at > 0 {
+		if r, _ := utf8.DecodeLastRuneInString(text[:at]); !unicode.IsSpace(r) {
+			return 0, "", false
+		}
+	}
+	return at, strings.ToLower(text[start:cursor]), true
+}
+
+// matchMembers returns up to limit members whose name contains query, the ones
+// with a word of their name starting with it first. They are given as emoji
+// codes without emoji, for the popup.
+func matchMembers(members []messages.Member, query string, limit int) []emojiCode {
+	var first, other []emojiCode
+	for _, member := range members {
+		name := strings.ToLower(member.Name)
+		if !strings.Contains(name, query) {
+			continue
+		}
+		code := emojiCode{name: member.Name}
+		if strings.HasPrefix(name, query) || strings.Contains(name, " "+query) {
+			first = append(first, code)
+		} else {
+			other = append(other, code)
+		}
+	}
+	matches := append(first, other...)
+	return matches[:min(len(matches), limit)]
 }

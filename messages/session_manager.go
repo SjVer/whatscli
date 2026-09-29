@@ -88,6 +88,8 @@ type SessionManager struct {
 	offlineMessages atomic.Int64
 	// pictures of chats shown on notifications
 	pictures chatPictures
+	// members of groups who can be mentioned
+	members groupMembers
 	// app state collections that were asked from the phone, see recoverAppState
 	recoveryRequested map[appstate.WAPatchName]bool
 	recoveryLock      sync.Mutex
@@ -194,6 +196,7 @@ func (sm *SessionManager) setCurrentReceiver(id string) {
 	// only the newest messages are saved, load the ones before them from the phone
 	if id != "" {
 		sm.loadChatOnce(id)
+		sm.GroupMembers(id) // to suggest them for mentions
 	}
 }
 
@@ -1255,6 +1258,12 @@ func (sm *SessionManager) sendText(wid, text string) {
 	}
 
 	raw := &waProto.Message{Conversation: proto.String(text)}
+	if sent, mentioned := resolveMentions(text, sm.GroupMembers(wid)); len(mentioned) > 0 {
+		raw = &waProto.Message{ExtendedTextMessage: &waProto.ExtendedTextMessage{
+			Text:        proto.String(sent),
+			ContextInfo: &waProto.ContextInfo{MentionedJID: mentioned},
+		}}
+	}
 	sm.lastSent = time.Now()
 	resp, err := sm.client.SendMessage(context.Background(), receiver, raw)
 	if err != nil {
@@ -1800,7 +1809,7 @@ func (eh *eventHandler) messageFromInfo(info types.MessageInfo, raw *waProto.Mes
 	case raw.GetExtendedTextMessage() != nil:
 		ext := raw.GetExtendedTextMessage()
 		msg.Kind = MessageKindText
-		msg.Text = ext.GetText()
+		msg.Text = eh.sm.showMentions(ext.GetText(), ext.GetContextInfo().GetMentionedJID())
 		msg.Forwarded = ext.GetContextInfo().GetIsForwarded()
 		return msg, true
 	case raw.GetImageMessage() != nil:
@@ -1878,6 +1887,14 @@ func (sm *SessionManager) refreshContactNames() {
 		}
 		id, name, short := sm.contactNames(jid)
 		return id, name, short, true
+	})
+	// the names of mentioned people, also in messages saved with an older name or number
+	sm.db.UpdateMessageTexts(func(msg Message) (string, bool) {
+		ext := msg.RawMessage.GetExtendedTextMessage()
+		if mentioned := ext.GetContextInfo().GetMentionedJID(); len(mentioned) > 0 {
+			return sm.showMentions(ext.GetText(), mentioned), true
+		}
+		return "", false
 	})
 }
 

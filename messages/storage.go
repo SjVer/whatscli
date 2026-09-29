@@ -608,6 +608,43 @@ func withValue[T any](values map[string]T, key string, value T, remove bool) map
 	return updated
 }
 
+// UpdateMessageTexts changes the text of the messages that text returns a new
+// one for. text is called without holding the lock, as it may be slow.
+func (md *MessageDatabase) UpdateMessageTexts(text func(msg Message) (string, bool)) {
+	md.messageLock.RLock()
+	var msgs []Message
+	for _, chatMsgs := range md.messages {
+		msgs = append(msgs, chatMsgs...)
+	}
+	md.messageLock.RUnlock()
+
+	texts := make(map[string]string)
+	for _, msg := range msgs {
+		if newText, ok := text(msg); ok && newText != msg.Text {
+			texts[msg.Id] = newText
+		}
+	}
+	if len(texts) == 0 {
+		return
+	}
+
+	md.messageLock.Lock()
+	defer md.messageLock.Unlock()
+	for chatID, chatMsgs := range md.messages {
+		for idx, msg := range chatMsgs {
+			if newText, ok := texts[msg.Id]; ok {
+				msg.Text = newText
+				chatMsgs[idx] = msg
+				md.messagesById[msg.Id] = msg
+			}
+		}
+		md.messages[chatID] = chatMsgs
+	}
+	md.chatLock.Lock()
+	md.scheduleSaveLocked()
+	md.chatLock.Unlock()
+}
+
 // UpdateContactNames sets the sender id and names of all messages in memory to
 // what names returns for their current sender id, if it returns ok. names is
 // called once per sender, without holding the lock, as it may be slow.
