@@ -6,6 +6,7 @@ import (
 	"time"
 
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
@@ -147,5 +148,37 @@ func TestMarkChatReadUntil(t *testing.T) {
 	}
 	if chats := db.GetChatIds(); chats[0].Unread != 1 {
 		t.Errorf("expected 1 unread message still, got %d", chats[0].Unread)
+	}
+}
+
+func TestOlderMessagesFromThePhoneDontMarkUnread(t *testing.T) {
+	ui := &recordingUi{}
+	sm := newTestSession(ui)
+	alice := types.NewJID("111", types.DefaultUserServer)
+	start := time.Now().Add(-time.Hour)
+	sm.eventHandler.Handle(incomingMessage("a1", alice, start))
+	sm.eventHandler.Handle(incomingMessage("a2", alice, start.Add(time.Minute)))
+	sm.db.MarkChatReadUntil(alice.String(), start.Add(time.Minute).Unix())
+
+	conversation := func(syncType waHistorySync.HistorySync_HistorySyncType) *events.HistorySync {
+		return &events.HistorySync{Data: &waHistorySync.HistorySync{
+			SyncType: syncType.Enum(),
+			Conversations: []*waHistorySync.Conversation{{
+				ID:               proto.String(alice.String()),
+				Name:             proto.String("Alice"),
+				UnreadCount:      proto.Uint32(2),
+				LastMsgTimestamp: proto.Uint64(uint64(start.Add(time.Minute).Unix())),
+			}},
+		}}
+	}
+	// the answer when the chat is opened
+	sm.eventHandler.Handle(conversation(waHistorySync.HistorySync_ON_DEMAND))
+	if unread := ui.unread(alice.String()); unread != 0 {
+		t.Fatalf("expected the older messages not to change what is new, got %d", unread)
+	}
+	// nor the phone's count of a chat that was read on another device since
+	sm.eventHandler.Handle(conversation(waHistorySync.HistorySync_RECENT))
+	if unread := ui.unread(alice.String()); unread != 0 {
+		t.Fatalf("expected the messages read on another device to stay read, got %d", unread)
 	}
 }

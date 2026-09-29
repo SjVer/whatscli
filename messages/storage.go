@@ -439,6 +439,8 @@ func (md *MessageDatabase) UpdateChatUnread(chatID string, unread int) {
 	defer md.messageLock.Unlock()
 
 	ids := md.lastIncomingMessageIDsLocked(chatID, unread)
+	// the ones read on another device since aren't new
+	ids = slices.DeleteFunc(ids, func(id string) bool { return md.readOnOtherDeviceLocked(md.messagesById[id]) })
 	unreadSet := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		unreadSet[id] = struct{}{}

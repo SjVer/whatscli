@@ -1681,6 +1681,10 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 
 	var chatIDs []string
 	messageCount := 0
+	// Messages requested from the phone when a chat is opened are older ones, and
+	// their unread count isn't the current one: that follows from the messages
+	// received since, and the chats read on other devices, see handleReceipt.
+	onDemand := evt.Data.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND
 	for _, conv := range evt.Data.GetConversations() {
 		// a conversation has either a LID with its phone number, or the other way around
 		eh.sm.learnLID(conv.GetID(), conv.GetPnJID())
@@ -1718,11 +1722,15 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 		if lastMessage == 0 {
 			lastMessage = int64(conv.GetConversationTimestamp())
 		}
+		unread := int(conv.GetUnreadCount())
+		if onDemand {
+			unread = 0
+		}
 		eh.sm.db.AddChat(Chat{
 			Id:          chatID,
 			IsGroup:     chatJID.Server == types.GroupServer,
 			Name:        chatName,
-			Unread:      int(conv.GetUnreadCount()),
+			Unread:      unread,
 			LastMessage: lastMessage,
 		})
 
@@ -1751,7 +1759,9 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 				eh.sm.db.SetReaction(msg.Id, eh.sm.reactorFromKey(reaction.GetKey(), chatJID), reaction.GetText(), reaction.GetSenderTimestampMS()/1000)
 			}
 		}
-		eh.sm.db.UpdateChatUnread(chatID, int(conv.GetUnreadCount()))
+		if !onDemand {
+			eh.sm.db.UpdateChatUnread(chatID, unread)
+		}
 
 		// The phone knows whether the chat is archived, which the app state alone
 		// doesn't tell, see GetChatIds. A conversation can be sent in several parts,
