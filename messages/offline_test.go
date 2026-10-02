@@ -182,3 +182,23 @@ func TestOlderMessagesFromThePhoneDontMarkUnread(t *testing.T) {
 		t.Fatalf("expected the messages read on another device to stay read, got %d", unread)
 	}
 }
+
+func TestMessagesInTheOpenChatAreNewWhileNotLookedAt(t *testing.T) {
+	ui := &recordingUi{}
+	sm := newTestSession(ui)
+	alice := types.NewJID("111", types.DefaultUserServer)
+	sm.currentReceiver = alice.String()
+	looking := true
+	sm.ChatSeen = func() bool { return looking }
+
+	sm.eventHandler.Handle(incomingMessage("a1", alice, time.Now().Add(-time.Minute)))
+	if unread := ui.unread(alice.String()); unread != 0 {
+		t.Fatalf("expected a message in the chat the user looks at to be read, got %d new", unread)
+	}
+	// e.g. another window has focus
+	looking = false
+	sm.eventHandler.Handle(incomingMessage("a2", alice, time.Now().Add(-time.Minute)))
+	if unread := ui.unread(alice.String()); unread != 1 {
+		t.Fatalf("expected a message in the open chat to be new while it isn't looked at, got %d", unread)
+	}
+}

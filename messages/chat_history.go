@@ -142,8 +142,8 @@ func historyCount() int {
 	return 50 // recommended by whatsmeow
 }
 
-// finishAllHistoryRequests marks all requests as answered, and returns their chats.
-func (sm *SessionManager) finishAllHistoryRequests() []string {
+// finishAllHistoryRequests marks all requests as answered.
+func (sm *SessionManager) finishAllHistoryRequests() {
 	sm.history.lock.Lock()
 	chatIDs := make([]string, 0, len(sm.history.pending))
 	for chatID := range sm.history.pending {
@@ -153,7 +153,6 @@ func (sm *SessionManager) finishAllHistoryRequests() []string {
 	for _, chatID := range chatIDs {
 		sm.finishHistoryRequest(chatID)
 	}
-	return chatIDs
 }
 
 // HistoryPending returns whether messages of a chat were requested and not received yet.

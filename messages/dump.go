@@ -86,6 +86,9 @@ func (sm *SessionManager) DumpChat(w io.Writer, chatID string) {
 		if msg.FromMe {
 			sender = "Me"
 		}
+		if msg.ReplyTo != nil {
+			fmt.Fprintf(w, "  replying to %s: %s\n", msg.ReplyTo.Name, strings.ReplaceAll(msg.ReplyTo.Text, "\n", " "))
+		}
 		fmt.Fprintf(w, "%s %s: %s\n", formatTimestamp(int64(msg.Timestamp)), sender, strings.ReplaceAll(msg.Text, "\n", " "))
 		if len(msg.Reactions) > 0 {
 			fmt.Fprintf(w, "  reactions: %s\n", strings.Join(sm.namedReactions(msg), ", "))

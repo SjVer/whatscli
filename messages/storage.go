@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"reflect"
 	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -94,6 +94,9 @@ func (md *MessageDatabase) LoadChats(path string, savedMessages int) error {
 	}
 	for _, chat := range chats {
 		chat.Unread = 0
+		if isFallbackName(chat.Id, chat.Name) {
+			chat.Name = "" // saved by older versions, see DisplayID
+		}
 		for _, recent := range chat.Recent {
 			msg := recent.Message
 			if len(recent.Raw) > 0 {
@@ -331,6 +334,9 @@ func (md *MessageDatabase) AddMessage(msg Message, markUnread bool) bool {
 		if len(existing.Mentions) == 0 && len(msg.Mentions) > 0 {
 			existing.Mentions = msg.Mentions
 		}
+		if existing.ReplyTo == nil && msg.ReplyTo != nil {
+			existing.ReplyTo = msg.ReplyTo
+		}
 		wasUnread := existing.Unread
 		existing.Unread = existing.Unread || (markUnread && !md.readOnOtherDeviceLocked(existing))
 		// counted once
@@ -370,13 +376,10 @@ func (md *MessageDatabase) updateChatFromMessageLocked(msg Message, markUnread b
 
 	chat, exists := md.chats[msg.ChatId]
 	if !exists {
-		chat = Chat{
-			Id:      msg.ChatId,
-			IsGroup: isGroupID(msg.ChatId),
-			Name:    msg.ContactName,
-		}
+		chat = Chat{Id: msg.ChatId, IsGroup: isGroupID(msg.ChatId)}
 	}
-	if chat.Name == "" {
+	// a chat with one person is named after them, unless only their number is known
+	if chat.Name == "" && !chat.IsGroup && !isFallbackName(msg.ChatId, msg.ContactName) {
 		chat.Name = msg.ContactName
 	}
 	if int64(msg.Timestamp) > chat.LastMessage {
@@ -650,9 +653,23 @@ func withValue[T any](values map[string]T, key string, value T, remove bool) map
 	return updated
 }
 
-// UpdateMessageTexts changes the text and mentions of the messages that text
-// returns new ones for. text is called without holding the lock, as it may be slow.
-func (md *MessageDatabase) UpdateMessageTexts(text func(msg Message) (string, []string, bool)) {
+// MessageContent is what a message says, as it is shown: its text with the
+// mentions in it, and what it replies to
+type MessageContent struct {
+	Text     string
+	Mentions []string
+	ReplyTo  *Reply
+}
+
+// content returns the content of a message
+func (msg Message) content() MessageContent {
+	return MessageContent{msg.Text, msg.Mentions, msg.ReplyTo}
+}
+
+// UpdateMessageContents changes the content of the messages that content
+// returns a new one for, e.g. when names changed. content is called without
+// holding the lock, as it may be slow.
+func (md *MessageDatabase) UpdateMessageContents(content func(msg Message) (MessageContent, bool)) {
 	md.messageLock.RLock()
 	var msgs []Message
 	for _, chatMsgs := range md.messages {
@@ -660,25 +677,21 @@ func (md *MessageDatabase) UpdateMessageTexts(text func(msg Message) (string, []
 	}
 	md.messageLock.RUnlock()
 
-	type update struct {
-		text     string
-		mentions []string
-	}
-	texts := make(map[string]update)
+	updates := make(map[string]MessageContent)
 	for _, msg := range msgs {
-		if newText, mentions, ok := text(msg); ok && (newText != msg.Text || !slices.Equal(mentions, msg.Mentions)) {
-			texts[msg.Id] = update{newText, mentions}
+		if updated, ok := content(msg); ok && !reflect.DeepEqual(updated, msg.content()) {
+			updates[msg.Id] = updated
 		}
 	}
-	if len(texts) == 0 {
+	if len(updates) == 0 {
 		return
 	}
 
 	md.messageLock.Lock()
 	defer md.messageLock.Unlock()
-	for id, updated := range texts {
+	for id, updated := range updates {
 		if msg, ok := md.messagesById[id]; ok {
-			msg.Text, msg.Mentions = updated.text, updated.mentions
+			msg.Text, msg.Mentions, msg.ReplyTo = updated.Text, updated.Mentions, updated.ReplyTo
 			md.messagesById[id] = msg
 			md.replaceMessageLocked(msg)
 		}
@@ -769,6 +782,13 @@ func (md *MessageDatabase) AddContact(contact Contact) {
 		}
 	}
 	md.contacts[contact.Id] = contact
+}
+
+// isProfileName returns whether a contact is known by their profile name only
+func (md *MessageDatabase) isProfileName(id string) bool {
+	md.contactLock.RLock()
+	defer md.contactLock.RUnlock()
+	return md.contacts[id].ProfileName
 }
 
 // GetChatIds returns pinned chats first, the last pinned one first, then the
@@ -900,7 +920,7 @@ func (md *MessageDatabase) GetIdName(id string) string {
 		return chat.Name
 	}
 
-	return strings.TrimSuffix(strings.TrimSuffix(id, CONTACTSUFFIX), GROUPSUFFIX)
+	return DisplayID(id)
 }
 
 // GetIdShort resolves a contact or chat ID to a short display name.
@@ -928,5 +948,5 @@ func (md *MessageDatabase) GetIdShort(id string) string {
 		return chat.Name
 	}
 
-	return strings.TrimSuffix(strings.TrimSuffix(id, CONTACTSUFFIX), GROUPSUFFIX)
+	return DisplayID(id)
 }

@@ -282,3 +282,26 @@ func TestGreyedOutNoticesAreNotDimmer(t *testing.T) {
 		t.Errorf("expected the notice to be grey like the rest, got %v with dim %v", fg, attr&tcell.AttrDim != 0)
 	}
 }
+
+func TestProfileNamesAreItalic(t *testing.T) {
+	defer func(check func(string) bool) { isProfileName = check }(isProfileName)
+	isProfileName = func(id string) bool { return id == "bob" }
+	// the attributes of the first letter of a name in the header
+	nameStyle := func(msg messages.Message, initial rune) tcell.AttrMask {
+		screen := drawText(t, getTextMessageString(&msg, nil))
+		for x := 0; x < 40; x++ {
+			if r, _, _, _ := screen.GetContent(x, 0); r == initial {
+				_, _, attr := styleAt(screen, x, 0).Decompose()
+				return attr
+			}
+		}
+		t.Fatalf("%c not drawn", initial)
+		return 0
+	}
+	if nameStyle(messages.Message{Id: "1", ContactId: "bob", ContactShort: "Bob", Text: "hi"}, 'B')&tcell.AttrItalic == 0 {
+		t.Error("expected the profile name to be italic")
+	}
+	if nameStyle(messages.Message{Id: "2", ContactId: "alice", ContactShort: "Alice", Text: "hi"}, 'A')&tcell.AttrItalic != 0 {
+		t.Error("expected a saved name not to be italic")
+	}
+}

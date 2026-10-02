@@ -57,6 +57,7 @@ type Keymap struct {
 	MessageInfo     string
 	MessageRevoke   string
 	MessageReact    string
+	MessageReply    string
 }
 
 type Ui struct {
@@ -113,6 +114,7 @@ var Config = IniFile{
 		MessageUrl:      "u",
 		MessageRevoke:   "r",
 		MessageReact:    "e",
+		MessageReply:    "a",
 		MessageShow:     "s",
 	},
 	&Ui{
@@ -130,7 +132,7 @@ var Config = IniFile{
 		Borders:           "white",
 		InputBackground:   "blue",
 		InputText:         "white",
-		SilentCommandText: "purple",
+		SilentCommandText: "violet",
 		CommandText:       "blue",
 		UnreadCount:       "yellow",
 		Mention:           "dodgerblue",

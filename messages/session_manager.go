@@ -60,6 +60,9 @@ type SessionManager struct {
 	Headless bool
 	// Log receives the log output of whatsmeow, nothing is logged if it is nil.
 	Log waLog.Logger
+	// ChatSeen returns whether the user is looking at the open chat, so that the
+	// messages that arrive in it are read, see seesChat. Without it, they are.
+	ChatSeen func() bool
 	// ChatsLoaded is signalled when the chat list was loaded after connecting.
 	ChatsLoaded chan struct{}
 	// OfflineSynced is signalled when the messages received while offline were delivered.
@@ -90,6 +93,8 @@ type SessionManager struct {
 	pictures chatPictures
 	// members of groups who can be mentioned
 	members groupMembers
+	// whether the QR code is shown, and whatscli can be linked, see LinkWithCode
+	linking atomic.Bool
 	// app state collections that were asked from the phone, see recoverAppState
 	recoveryRequested map[appstate.WAPatchName]bool
 	recoveryLock      sync.Mutex
@@ -365,6 +370,8 @@ func (sm *SessionManager) loginWithQRCode(client *whatsmeow.Client) error {
 	if err = client.Connect(); err != nil {
 		return fmt.Errorf("error connecting to WhatsApp: %v", err)
 	}
+	sm.linking.Store(true)
+	defer sm.linking.Store(false)
 
 	for evt := range qrChan {
 		switch evt.Event {
@@ -372,6 +379,8 @@ func (sm *SessionManager) loginWithQRCode(client *whatsmeow.Client) error {
 			terminal := qrcode.New()
 			terminal.SetOutput(tview.ANSIWriter(sm.uiHandler.GetWriter()))
 			terminal.Get(evt.Code).Print()
+			// below the code, which can be bigger than the screen; each new code is printed below the last
+			sm.uiHandler.PrintText(linkCodeHint())
 		case "success":
 			sm.uiHandler.PrintText("Successfully logged in!")
 			if cs := sm.getChatSync(); cs != nil {
@@ -498,9 +507,9 @@ func (sm *SessionManager) addContactChats() int {
 	for jid, contact := range contacts {
 		name, short := contactDisplayNames(contact)
 		if name == "" {
-			name = jid.User
+			name = DisplayID(jid.String())
 		}
-		sm.db.AddContact(Contact{Id: jid.String(), Name: name, Short: short})
+		sm.db.AddContact(Contact{Id: jid.String(), Name: name, Short: short, ProfileName: isProfileName(contact)})
 		if jid.Server == types.DefaultUserServer {
 			sm.db.AddChat(Chat{Id: jid.String(), Name: name})
 			addedChats++
@@ -671,9 +680,15 @@ func (sm *SessionManager) execCommand(command Command) {
 		sm.uiHandler.PrintError(sm.logout())
 	case "send":
 		if checkParam(command.Params, 2) {
-			sm.sendText(command.Params[0], strings.Join(command.Params[1:], " "))
+			sm.sendText(command.Params[0], strings.Join(command.Params[1:], " "), "")
 		} else {
 			sm.printCommandUsage("send", "[chat-id[] [message text[]")
+		}
+	case "reply":
+		if checkParam(command.Params, 3) {
+			sm.sendText(command.Params[0], strings.Join(command.Params[2:], " "), command.Params[1])
+		} else {
+			sm.printCommandUsage("reply", "[chat-id[] [message-id[] [message text[]")
 		}
 	case "select":
 		if checkParam(command.Params, 1) {
@@ -1253,7 +1268,8 @@ func (sm *SessionManager) getMessages(wid string) []Message {
 	return sm.db.GetMessages(wid)
 }
 
-func (sm *SessionManager) sendText(wid, text string) {
+// sendText sends a message, as a reply to the message with the ID replyID, if any
+func (sm *SessionManager) sendText(wid, text, replyID string) {
 	if sm.client == nil || !sm.client.IsConnected() {
 		sm.uiHandler.PrintError(errors.New("not connected to WhatsApp"))
 		return
@@ -1267,10 +1283,17 @@ func (sm *SessionManager) sendText(wid, text string) {
 
 	raw := &waProto.Message{Conversation: proto.String(text)}
 	sent, mentioned, typed := resolveMentions(text, sm.GroupMembers(wid))
-	if len(mentioned) > 0 {
+	var reply *Reply
+	ctx := &waProto.ContextInfo{}
+	if quoted, ok := sm.db.GetMessage(replyID); ok {
+		ctx = sm.replyContext(quoted)
+		reply = replyTo(quoted)
+	}
+	if len(mentioned) > 0 || reply != nil {
+		ctx.MentionedJID = mentioned
 		raw = &waProto.Message{ExtendedTextMessage: &waProto.ExtendedTextMessage{
 			Text:        proto.String(sent),
-			ContextInfo: &waProto.ContextInfo{MentionedJID: mentioned},
+			ContextInfo: ctx,
 		}}
 	}
 	sm.lastSent = time.Now()
@@ -1282,6 +1305,7 @@ func (sm *SessionManager) sendText(wid, text string) {
 
 	newMsg := sm.outgoingMessageFromSendResponse(resp, wid, raw, MessageKindText, text, "", "")
 	newMsg.Mentions = typed
+	newMsg.ReplyTo = reply
 	sm.messageSent(newMsg)
 }
 
@@ -1575,6 +1599,12 @@ func (sm *SessionManager) chatReadElsewhere(chatID string, readUntil, seenUntil 
 	}
 }
 
+// seesChat returns whether the user is looking at a chat: it is open, and
+// whatscli and its message panel or input have focus, see ChatSeen
+func (sm *SessionManager) seesChat(chatID string) bool {
+	return chatID != "" && chatID == sm.currentReceiver && (sm.ChatSeen == nil || sm.ChatSeen())
+}
+
 // showIfOpen shows the messages of a chat again if it is open, e.g. when they
 // were read
 func (sm *SessionManager) showIfOpen(chatID string) {
@@ -1604,9 +1634,10 @@ func (eh *eventHandler) handleLiveMessage(evt *events.Message) {
 	switch action {
 	case "react":
 		chatID, ok := eh.sm.db.SetReaction(msg.Id, msg.SenderId, msg.Text, int64(msg.Timestamp))
-		if ok && chatID == eh.sm.currentReceiver && show {
+		if ok && show {
 			eh.sm.showIfOpen(chatID)
-		} else if ok && eh.isNewReaction(msg) {
+		}
+		if ok && !eh.sm.seesChat(chatID) && eh.isNewReaction(msg) {
 			eh.sm.db.AddUnreadReaction(chatID, int64(msg.Timestamp))
 			if show {
 				eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
@@ -1625,19 +1656,21 @@ func (eh *eventHandler) handleLiveMessage(evt *events.Message) {
 		return
 	}
 
-	markUnread := !msg.FromMe && msg.ChatId != eh.sm.currentReceiver
+	markUnread := !msg.FromMe && !eh.sm.seesChat(msg.ChatId)
 	isNew := eh.sm.db.AddMessage(msg, markUnread)
 	if stored, ok := eh.sm.db.GetMessage(msg.Id); ok {
 		// it may have been read on the phone already
 		markUnread = markUnread && stored.Unread
 	}
-	if msg.ChatId == eh.sm.currentReceiver {
-		if show && isNew {
+	if msg.ChatId == eh.sm.currentReceiver && show {
+		if isNew {
 			eh.sm.uiHandler.NewMessage(msg)
-		} else if show {
+		} else {
 			eh.sm.uiHandler.NewScreen(eh.sm.getMessages(msg.ChatId))
 		}
-	} else if markUnread && isNew && msg.Timestamp > uint64(time.Now().Unix()-30) {
+	}
+	// also for the open chat while the user isn't looking at it
+	if markUnread && isNew && msg.Timestamp > uint64(time.Now().Unix()-30) {
 		// showing it can take a moment, e.g. on Windows, which starts PowerShell
 		title, text := notificationText(msg, eh.sm.db.GetIdName(msg.ChatId))
 		go func() {
@@ -1662,6 +1695,7 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 
 	var chatIDs []string
 	messageCount := 0
+	learnedNames := false
 	// Messages requested from the phone when a chat is opened are older ones, and
 	// their unread count isn't the current one: that follows from the messages
 	// received since, and the chats read on other devices, see handleReceipt.
@@ -1724,6 +1758,9 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 			if err != nil {
 				continue
 			}
+			if !parsed.Info.IsFromMe && eh.sm.learnPushName(parsed.Info.Sender, webMsg.GetPushName()) {
+				learnedNames = true
+			}
 			msg, action, ok := eh.normalizeEventMessage(parsed)
 			if ok && action == "react" {
 				eh.sm.db.SetReaction(msg.Id, msg.SenderId, msg.Text, int64(msg.Timestamp))
@@ -1760,28 +1797,23 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 		}
 	}
 
+	if learnedNames {
+		// of people who aren't in the contacts
+		eh.sm.addContactChats()
+		eh.sm.refreshContactNames()
+	}
 	eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
 	eh.sm.showIfOpen(eh.sm.currentReceiver)
 	if cs := eh.sm.getChatSync(); cs != nil {
 		cs.onHistory(evt.Data, chatIDs, messageCount)
 	}
 	if onDemand {
-		answered := chatIDs
 		// an answer without messages doesn't say for which chat
 		if len(chatIDs) == 0 {
-			answered = eh.sm.finishAllHistoryRequests()
+			eh.sm.finishAllHistoryRequests()
 		}
 		for _, chatID := range chatIDs {
 			eh.sm.finishHistoryRequest(chatID)
-		}
-		sent := 0
-		for _, conv := range evt.Data.GetConversations() {
-			sent += len(conv.GetMessages())
-		}
-		if sent == 0 {
-			for _, chatID := range answered {
-				eh.sm.uiHandler.SetNotice(chatID, historyNotice, "Your phone has no older messages")
-			}
 		}
 	}
 }
@@ -1844,45 +1876,37 @@ func (eh *eventHandler) messageFromInfo(info types.MessageInfo, raw *waProto.Mes
 	case raw.GetConversation() != "":
 		msg.Kind = MessageKindText
 		msg.Text = raw.GetConversation()
-		return msg, true
 	case raw.GetExtendedTextMessage() != nil:
 		ext := raw.GetExtendedTextMessage()
 		msg.Kind = MessageKindText
 		msg.Text, msg.Mentions = eh.sm.showMentions(ext.GetText(), ext.GetContextInfo().GetMentionedJID())
-		msg.Forwarded = ext.GetContextInfo().GetIsForwarded()
-		return msg, true
 	case raw.GetImageMessage() != nil:
 		image := raw.GetImageMessage()
 		msg.Kind = MessageKindImage
 		msg.MimeType = image.GetMimetype()
 		msg.Text = mediaDisplayText(MessageKindImage, "", image.GetCaption())
-		msg.Forwarded = image.GetContextInfo().GetIsForwarded()
-		return msg, true
 	case raw.GetVideoMessage() != nil:
 		video := raw.GetVideoMessage()
 		msg.Kind = MessageKindVideo
 		msg.MimeType = video.GetMimetype()
 		msg.Text = mediaDisplayText(MessageKindVideo, "", video.GetCaption())
-		msg.Forwarded = video.GetContextInfo().GetIsForwarded()
-		return msg, true
 	case raw.GetAudioMessage() != nil:
-		audio := raw.GetAudioMessage()
 		msg.Kind = MessageKindAudio
-		msg.MimeType = audio.GetMimetype()
+		msg.MimeType = raw.GetAudioMessage().GetMimetype()
 		msg.Text = mediaDisplayText(MessageKindAudio, "", "")
-		msg.Forwarded = audio.GetContextInfo().GetIsForwarded()
-		return msg, true
 	case raw.GetDocumentMessage() != nil:
 		doc := raw.GetDocumentMessage()
 		msg.Kind = MessageKindDocument
 		msg.MimeType = doc.GetMimetype()
 		msg.FileName = doc.GetFileName()
 		msg.Text = mediaDisplayText(MessageKindDocument, doc.GetFileName(), doc.GetCaption())
-		msg.Forwarded = doc.GetContextInfo().GetIsForwarded()
-		return msg, true
 	default:
 		return Message{}, false
 	}
+	ctx := contextInfo(raw)
+	msg.Forwarded = ctx.GetIsForwarded()
+	msg.ReplyTo = eh.replyOf(info, ctx)
+	return msg, true
 }
 
 func (eh *eventHandler) contactForMessage(info types.MessageInfo) (string, string, string) {
@@ -1896,10 +1920,13 @@ func (eh *eventHandler) contactForMessage(info types.MessageInfo) (string, strin
 // phone, it prefers the name saved in the contacts over the user's profile name.
 func (sm *SessionManager) contactNames(jid types.JID) (string, string, string) {
 	jid = jid.ToNonAD()
-	// contacts are stored under the phone number, groups address users by LID
+	// contacts are stored under the phone number, groups address users by LID,
+	// and profile names can be known under either
 	jids := []types.JID{jid}
 	if pn, err := types.ParseJID(sm.chatIdForJID(jid)); err == nil && pn != jid {
 		jids = []types.JID{pn, jid}
+	} else if lid, err := sm.phoneChatJID(jid.String()); err == nil && lid != jid {
+		jids = []types.JID{jid, lid}
 	}
 	id := jids[0].String()
 	if sm.client != nil && sm.client.Store.Contacts != nil {
@@ -1927,32 +1954,21 @@ func (sm *SessionManager) refreshContactNames() {
 		id, name, short := sm.contactNames(jid)
 		return id, name, short, true
 	})
-	// the names of mentioned people, also in messages saved with an older name or number
-	sm.db.UpdateMessageTexts(func(msg Message) (string, []string, bool) {
-		ext := msg.RawMessage.GetExtendedTextMessage()
-		if mentioned := ext.GetContextInfo().GetMentionedJID(); len(mentioned) > 0 {
-			text, shown := sm.showMentions(ext.GetText(), mentioned)
-			return text, shown, true
+	// the names of mentioned people and of who sent what a message replies to,
+	// also in messages saved with an older name or number, or before replies
+	// were shown
+	sm.db.UpdateMessageContents(func(msg Message) (MessageContent, bool) {
+		ctx := contextInfo(msg.RawMessage)
+		if ctx.GetStanzaID() == "" && len(ctx.GetMentionedJID()) == 0 {
+			return MessageContent{}, false
 		}
-		return "", nil, false
+		content := msg.content()
+		if ext := msg.RawMessage.GetExtendedTextMessage(); len(ctx.GetMentionedJID()) > 0 && ext != nil {
+			content.Text, content.Mentions = sm.showMentions(ext.GetText(), ctx.GetMentionedJID())
+		}
+		content.ReplyTo = sm.eventHandler.replyOf(messageInfo(msg), ctx)
+		return content, true
 	})
-}
-
-// contactDisplayNames returns the name and short name to show for a contact.
-// Like the phone, it prefers the name saved in the contacts over the profile name.
-func contactDisplayNames(contact types.ContactInfo) (string, string) {
-	name := firstNonEmpty(contact.FullName, contact.FirstName, contact.PushName, contact.BusinessName)
-	short := firstNonEmpty(contact.FirstName, contact.FullName, contact.PushName, contact.BusinessName)
-	return name, short
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func (sm *SessionManager) downloadMessage(msg Message, open bool) (string, error) {

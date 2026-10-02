@@ -75,7 +75,9 @@ type Message struct {
 	FileName     string
 	Unread       bool
 	// the mentions in Text as they are shown, like @Alice
-	Mentions   []string         `json:",omitempty"`
+	Mentions []string `json:",omitempty"`
+	// the message this one replies to
+	ReplyTo    *Reply           `json:",omitempty"`
 	RawMessage *waProto.Message `json:"-"` // saved as SavedMessage.Raw
 	// emoji reactions by who reacted, see ReactorMe, and when they were given
 	Reactions     map[string]string `json:",omitempty"`
@@ -133,6 +135,8 @@ type Contact struct {
 	Id    string
 	Name  string
 	Short string
+	// whether the name is only their profile name, see SessionManager.IsProfileName
+	ProfileName bool
 }
 
 const GROUPSUFFIX = "@g.us"

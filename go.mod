@@ -11,6 +11,7 @@ require (
 	github.com/kyokomi/emoji/v2 v2.2.14
 	github.com/mattn/go-colorable v0.1.14
 	github.com/mattn/go-sqlite3 v1.14.48
+	github.com/nyaruka/phonenumbers v1.8.1
 	github.com/rivo/tview v0.42.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/rs/zerolog v1.35.1

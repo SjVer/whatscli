@@ -84,7 +84,7 @@ func (sm *SessionManager) membersOf(participants []types.GroupParticipant) []Mem
 		}
 		_, name, _ := sm.contactNames(lookup)
 		if !isShownName(name) {
-			name = lookup.User
+			name = DisplayID(lookup.String())
 		}
 		members = append(members, Member{Id: participant.JID.ToNonAD().String(), Name: name})
 	}

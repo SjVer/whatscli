@@ -87,6 +87,12 @@ func main() {
 	sessionManager.Init(uiHandler)
 
 	app = tview.NewApplication()
+	// a screen of its own, which notes when whatscli has focus, see chatSeen
+	if screen, err := newFocusScreen(); err == nil {
+		app.SetScreen(screen) // which starts it
+		screen.EnableFocus()
+	}
+	sessionManager.ChatSeen = chatSeen
 
 	sideBarWidth := config.Config.Ui.ChatSidebarWidth
 	gridLayout := tview.NewGrid()
@@ -138,6 +144,7 @@ func main() {
 		greyOutUnfocusedPanel(screen)
 		drawSuggestions(screen)
 		updateTitle(screen)
+		chatListFocused.Store(treeView.HasFocus())
 	})
 	app.EnableMouse(true)
 	// pasted text arrives in one piece, so line breaks don't send it line by line
@@ -698,6 +705,9 @@ func LoadShortcuts() {
 	if err := keysMessages.Set(config.Config.Keymap.MessageReact, handleMessageReact); err != nil {
 		PrintErrorMsg("message_react:", err)
 	}
+	if err := keysMessages.Set(config.Config.Keymap.MessageReply, handleMessageReply); err != nil {
+		PrintErrorMsg("message_reply:", err)
+	}
 	if err := keysMessages.Set(config.Config.Keymap.MessageRevoke, handleMessageCommand("revoke")); err != nil {
 		PrintErrorMsg("message_revoke:", err)
 	}
@@ -751,6 +761,7 @@ func PrintHelp() {
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageUrl, "[::-] = Find URL in message and open it")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageRevoke, "[::-] = Revoke message")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageReact, "[::-] = React to message, type the emoji after "+config.Config.General.CmdPrefix+"react")
+	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageReply, "[::-] = Reply to message, type the reply in the input")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageInfo, "[::-] = Info about message, including who reacted")
 	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "Config file in ->", config.GetConfigFilePath())
@@ -771,6 +782,7 @@ func PrintCommands() {
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"logout[::-]  = Remove login data from computer")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"reset[::-]  = Remove stored session and reconnect cleanly")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"relink[::-]  = Link again to get the chat list from your phone")
+	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"code[::-] phone-number  = Link with a code instead of the QR code, while it is shown")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"quit [::-]or[::b]", config.Config.Keymap.CommandQuit, "[::-] = Exit app")
 	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "[-::-]Chat[-::-]")
@@ -803,11 +815,13 @@ func PrintCommands() {
 func EnterCommand(key tcell.Key) {
 	text := textInput.GetText()
 	if key == tcell.KeyEsc {
-		// clear the input first, then the search results, then scroll the
-		// chat back down to the newest messages
+		// clear the input first, then the reply, then the search results, then
+		// scroll the chat back down to the newest messages
 		reactTarget = ""
 		if text != "" {
 			setInput("")
+		} else if replyTarget != "" {
+			cancelReply()
 		} else if messageSearch != "" || chatSearch != "" {
 			Search("")
 		} else {
@@ -825,7 +839,7 @@ func EnterCommand(key tcell.Key) {
 			PrintText("no receiver")
 			return
 		}
-		sessionManager.CommandChannel <- messages.Command{Name: "send", Params: []string{currentReceiver.Id, replaceShortcodes(text)}}
+		sendMessage(text)
 		return
 	}
 	// commands of the UI, the others are run by the session manager
@@ -840,6 +854,9 @@ func EnterCommand(key tcell.Key) {
 		Search(strings.TrimSpace(args))
 	case "quit":
 		handleQuit(nil)
+	case "code":
+		// while the session manager waits for the phone to link
+		sessionManager.LinkWithCode(args)
 	default:
 		var params []string
 		if args != "" {
@@ -857,10 +874,8 @@ func GetOffsetMsgId(curId string, offset int) string {
 	}
 	for idx, val := range curRegions {
 		if val.Id == curId {
-			arrPos := idx + offset
-			if len(curRegions) > arrPos && arrPos >= 0 {
-				return curRegions[arrPos].Id
-			}
+			// stays at the first or last message, instead of going round
+			return curRegions[max(0, min(idx+offset, len(curRegions)-1))].Id
 		}
 	}
 	if offset > 0 {
@@ -1026,6 +1041,8 @@ func switchDraft(from string, to string, typed string) string {
 // sets the current chat, loads text from storage to TextView
 func SetDisplayedChat(wid messages.Chat) {
 	if wid.Id != currentReceiver.Id {
+		// the reply is to a message in the other chat
+		cancelReply()
 		setInput(switchDraft(currentReceiver.Id, wid.Id, textInput.GetText()))
 		updateChatNode(currentReceiver.Id)
 		updateChatNode(wid.Id)
@@ -1109,12 +1126,8 @@ var reactorName = func(reactor string) string {
 
 // getReactionString returns a dimmed line telling who reacted to a message with what
 func getReactionString(msg *messages.Message, reactor string, at int64) string {
-	text, _, _ := strings.Cut(msg.Text, "\n")
-	if runes := []rune(text); len(runes) > 40 {
-		text = string(runes[:40]) + "…"
-	}
-	return "[::d](" + formatMessageTime(time.Unix(at, 0), time.Now()) + ") " + tview.Escape(reactorName(reactor)) +
-		" reacted " + tview.Escape(msg.Reactions[reactor]) + " to \"" + tview.Escape(text) + "\"[::-]"
+	return "[::d](" + formatMessageTime(time.Unix(at, 0), time.Now()) + ") " + nameText(reactor, reactorName(reactor)) +
+		" reacted " + tview.Escape(msg.Reactions[reactor]) + " to \"" + tview.Escape(excerpt(msg.Text, 40)) + "\"[::-]"
 }
 
 // messageGroupGap is how close in time messages of one sender must follow each
@@ -1211,13 +1224,17 @@ func getTextMessageString(msg *messages.Message, prev *messages.Message) string 
 		if msg.FromMe { //msg from me
 			header += "[" + colorMe + "::b]Me:[-::-]\n"
 		} else { // message from others
-			header += "[" + colorContact + "::b]" + msg.ContactShort + ":[-::-]\n"
+			header += "[" + colorContact + "::b]" + nameText(msg.ContactId, msg.ContactShort) + ":[-::-]\n"
 		}
 	}
 	out += "[\""
 	out += msg.Id
 	out += "\"]"
-	out += header + text
+	out += header
+	if msg.ReplyTo != nil {
+		out += replyLine(msg.ReplyTo)
+	}
+	out += text
 	// marked so they can't be mistaken for a message that is only an emoji
 	if reactions := reactionSummary(msg.Reactions); reactions != "" {
 		arrow := "[gray::-] ↳"
@@ -1521,12 +1538,27 @@ func updateTitle(screen tcell.Screen) {
 	}
 }
 
+// nameText escapes the name of a person for the screen, in italics when it is
+// only the profile name they chose, as they aren't saved in the contacts
+func nameText(id, name string) string {
+	if isProfileName(id) {
+		return "[::i]" + tview.Escape(name) + "[::I]"
+	}
+	return tview.Escape(name)
+}
+
+// isProfileName returns whether a person is known by their profile name only
+var isProfileName = func(id string) bool {
+	return sessionManager != nil && sessionManager.IsProfileName(id)
+}
+
 // chatNodeText returns the text of a chat in the chat list
 func chatNodeText(chat messages.Chat) string {
 	name := chat.Name
 	if name == "" {
-		name = strings.TrimSuffix(strings.TrimSuffix(chat.Id, messages.GROUPSUFFIX), messages.CONTACTSUFFIX)
+		name = messages.DisplayID(chat.Id)
 	}
+	name = nameText(chat.Id, name)
 	if chat.Pinned {
 		name = "📌 " + name
 	}
@@ -1567,15 +1599,21 @@ func (u UiHandler) CloseChat(chatID string) {
 // SetNotice shows a dim status line in a chat, see UiMessageHandler
 func (u UiHandler) SetNotice(chatID, key, text string) {
 	go app.QueueUpdateDraw(func() {
-		if !setNotice(chatID, key, text) || chatID != currentReceiver.Id {
-			return
-		}
-		if !printedSinceRender.Load() {
-			renderMessages()
-		} else if text != "" {
-			fmt.Fprint(textView, noticeLine(text))
-		}
+		showNotice(chatID, key, text)
 	})
+}
+
+// showNotice sets a notice of a chat, see setNotice, and shows it if the chat
+// is open. Text printed below the messages is kept, see printedSinceRender.
+func showNotice(chatID, key, text string) {
+	if !setNotice(chatID, key, text) || chatID != currentReceiver.Id {
+		return
+	}
+	if !printedSinceRender.Load() {
+		renderMessages()
+	} else if text != "" {
+		fmt.Fprint(textView, noticeLine(text))
+	}
 }
 
 func (u UiHandler) PrintError(err error) {

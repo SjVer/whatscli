@@ -387,3 +387,17 @@ func TestWindowTitleCountsNewMessagesAndReactions(t *testing.T) {
 		t.Errorf("expected the reactions to be counted in the chat list, got %q", text)
 	}
 }
+
+func TestMovingThroughMessagesStopsAtTheEnds(t *testing.T) {
+	curRegions = []messages.Message{{Id: "1"}, {Id: "2"}, {Id: "3"}}
+	defer func() { curRegions = nil }()
+	for _, test := range []struct {
+		from   string
+		offset int
+		to     string
+	}{{"3", 1, "3"}, {"1", -1, "1"}, {"2", 1, "3"}, {"2", -10, "1"}} {
+		if id := GetOffsetMsgId(test.from, test.offset); id != test.to {
+			t.Errorf("from %s by %d: expected %s, got %s", test.from, test.offset, test.to, id)
+		}
+	}
+}
