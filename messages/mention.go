@@ -81,9 +81,13 @@ func (sm *SessionManager) membersOf(participants []types.GroupParticipant) []Mem
 		lookup := participant.JID
 		if !participant.PhoneNumber.IsEmpty() {
 			lookup = participant.PhoneNumber // contacts are saved under the number
+			// so that receipts by LID are kept by number too, see userKey
+			sm.learnLID(participant.LID.String(), participant.PhoneNumber.String())
 		}
-		_, name, _ := sm.contactNames(lookup)
-		if !isShownName(name) {
+		name, ok := sm.realName(lookup)
+		if !ok && lookup.Server != types.DefaultUserServer {
+			continue // only their LID is known, which can't be told apart by name
+		} else if !ok {
 			name = DisplayID(lookup.String())
 		}
 		members = append(members, Member{Id: participant.JID.ToNonAD().String(), Name: name})
@@ -122,12 +126,13 @@ func (sm *SessionManager) showMentions(text string, mentioned []string) (string,
 		if err != nil || jid.User == "" {
 			continue
 		}
-		name := "You"
+		// as the number when no name is known, like the phone does
+		name, ok := "You", true
 		if !sm.isOwnUser(jid) {
-			_, name, _ = sm.contactNames(jid)
+			name, ok = sm.realName(jid)
 		}
 		mention := "@" + jid.User
-		if isShownName(name) {
+		if ok {
 			text = strings.ReplaceAll(text, mention, "@"+name)
 			mention = "@" + name
 		}
@@ -136,12 +141,6 @@ func (sm *SessionManager) showMentions(text string, mentioned []string) (string,
 		}
 	}
 	return text, shown
-}
-
-// isShownName returns whether a contact name can be shown instead of a
-// number: contactNames returns the JID when it knows no name
-func isShownName(name string) bool {
-	return name != "" && !strings.Contains(name, "@")
 }
 
 // isOwnUser returns whether jid is the user, by number or LID

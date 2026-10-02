@@ -25,11 +25,12 @@ type historyRequests struct {
 // historyNotice is the key of the notices about loading a chat from the phone
 const historyNotice = "history"
 
-// errNoKnownMessage is returned by RequestChatHistory for a chat without messages in memory
+// errNoKnownMessage is returned by LoadChat and RequestChatHistory for a chat
+// without messages in memory, as the phone only answers for a message it knows
 var errNoKnownMessage = errors.New("no message of this chat is known yet, it loads once a message arrives or after /relink")
 
-// loadChatOnce requests the messages before the saved ones the first time a chat
-// is opened after starting whatscli, and again next time if that failed.
+// loadChatOnce requests the messages of a chat the first time it is opened
+// after starting whatscli, and again next time if that failed, see LoadChat.
 func (sm *SessionManager) loadChatOnce(chatID string) {
 	sm.history.lock.Lock()
 	loaded := sm.history.loaded[chatID]
@@ -37,7 +38,7 @@ func (sm *SessionManager) loadChatOnce(chatID string) {
 	if loaded {
 		return
 	}
-	err := sm.RequestChatHistory(chatID)
+	err := sm.LoadChat(chatID)
 	if errors.Is(err, errNoKnownMessage) {
 		return // e.g. a contact that was never written to
 	} else if err != nil {
@@ -52,11 +53,33 @@ func (sm *SessionManager) loadChatOnce(chatID string) {
 	sm.history.lock.Unlock()
 }
 
-// RequestChatHistory asks the phone for the messages of a chat before the oldest
-// one in memory. Only the newest message of each chat is saved, so this is how
-// a chat is loaded after starting whatscli. The phone doesn't answer requests
-// that don't refer to a message it knows.
+// RequestChatHistory asks the phone for older messages of a chat, before the
+// oldest one in memory, e.g. for the backlog key. The phone doesn't answer
+// requests that don't refer to a message it knows.
 func (sm *SessionManager) RequestChatHistory(chatID string) error {
+	oldest, ok := sm.db.GetOldestMessage(chatID)
+	if !ok {
+		return errNoKnownMessage
+	}
+	return sm.requestHistory(chatID, oldest, historyCount())
+}
+
+// LoadChat asks the phone for the messages of a chat before the newest one:
+// the saved ones again, as only the phone knows how far the user's messages
+// got, see MessageStatus, and as many older ones. The newest message itself
+// isn't in the answer, so its status only comes from receipts. Its count grows
+// with the messages in memory, which are about historyCount when a chat is
+// first opened, see loadChatOnce.
+func (sm *SessionManager) LoadChat(chatID string) error {
+	msgs := sm.db.GetMessages(chatID)
+	if len(msgs) == 0 {
+		return errNoKnownMessage
+	}
+	return sm.requestHistory(chatID, msgs[len(msgs)-1], len(msgs)-1+historyCount())
+}
+
+// requestHistory asks the phone for count messages of a chat before a known message.
+func (sm *SessionManager) requestHistory(chatID string, known Message, count int) error {
 	if sm.client == nil || !sm.client.IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
@@ -64,16 +87,12 @@ func (sm *SessionManager) RequestChatHistory(chatID string) error {
 	if err != nil {
 		return err
 	}
-	oldest, ok := sm.db.GetOldestMessage(chatID)
-	if !ok {
-		return errNoKnownMessage
-	}
 	anchor := &types.MessageInfo{
-		MessageSource: types.MessageSource{Chat: jid, IsFromMe: oldest.FromMe, IsGroup: jid.Server == types.GroupServer},
-		ID:            types.MessageID(oldest.Id),
-		Timestamp:     time.Unix(int64(oldest.Timestamp), 0),
+		MessageSource: types.MessageSource{Chat: jid, IsFromMe: known.FromMe, IsGroup: jid.Server == types.GroupServer},
+		ID:            types.MessageID(known.Id),
+		Timestamp:     time.Unix(int64(known.Timestamp), 0),
 	}
-	if sender, err := types.ParseJID(oldest.SenderId); err == nil {
+	if sender, err := types.ParseJID(known.SenderId); err == nil {
 		anchor.Sender = sender
 	}
 
@@ -94,10 +113,7 @@ func (sm *SessionManager) RequestChatHistory(chatID string) error {
 	sm.updateActivity()
 	sm.uiHandler.SetNotice(chatID, historyNotice, "")
 
-	count := historyCount()
-	if sm.Log != nil {
-		sm.Log.Debugf("Requesting %d messages of %s before message %s from %s", count, chatID, anchor.ID, anchor.Timestamp)
-	}
+	sm.logDebug("Requesting %d messages of %s before message %s from %s", count, chatID, anchor.ID, anchor.Timestamp)
 	req := sm.client.BuildHistorySyncRequest(anchor, count)
 	if _, err = sm.client.SendPeerMessage(context.Background(), req); err != nil {
 		sm.finishHistoryRequest(chatID)

@@ -13,10 +13,12 @@ import (
 // Reply is the message a message replies to, as it is shown above it
 type Reply struct {
 	Id string
-	// who sent it, and their short name, "You" for the user
+	// who sent it, by number when known, "" for the user
 	SenderId string `json:",omitempty"`
-	Name     string
-	Text     string
+	// their short name, "You" for the user, as it was when the reply arrived,
+	// which refreshContactNames updates
+	Name string
+	Text string
 }
 
 // contextInfo returns the context info of a message, which says what it
@@ -60,8 +62,9 @@ func (eh *eventHandler) replyOf(info types.MessageInfo, ctx *waProto.ContextInfo
 		reply.SenderId, _, reply.Name = eh.sm.contactNames(sender)
 	}
 	if quoted := ctx.GetQuotedMessage(); quoted != nil {
+		eh.sm.logDebug("Message %s replies to %s, which isn't loaded, shown from the copy in the reply", info.ID, id)
 		quotedInfo := info
-		quotedInfo.ID, quotedInfo.Sender = id, sender
+		quotedInfo.ID, quotedInfo.Sender, quotedInfo.IsFromMe = id, sender, eh.sm.isOwnUser(sender)
 		if msg, ok := eh.messageFromInfo(quotedInfo, quoted); ok {
 			reply.Text = msg.Text
 		}
@@ -81,15 +84,15 @@ func messageInfo(msg Message) types.MessageInfo {
 
 // replyTo returns how a reply to msg shows it
 func replyTo(msg Message) *Reply {
-	name := msg.ContactShort
 	if msg.FromMe {
-		name = "You"
+		// the ContactId of the user's messages in a chat with one person is that person
+		return &Reply{Id: msg.Id, Name: "You", Text: msg.Text}
 	}
-	return &Reply{Id: msg.Id, SenderId: msg.ContactId, Name: name, Text: msg.Text}
+	return &Reply{Id: msg.Id, SenderId: msg.ContactId, Name: msg.ContactShort, Text: msg.Text}
 }
 
 // replyContext returns the context info of a reply to msg
-func (sm *SessionManager) replyContext(msg Message) *waProto.ContextInfo {
+func replyContext(msg Message) *waProto.ContextInfo {
 	ctx := &waProto.ContextInfo{StanzaID: &msg.Id, QuotedMessage: msg.RawMessage}
 	if sender, err := types.ParseJID(msg.SenderId); err == nil && !sender.IsEmpty() {
 		participant := sender.ToNonAD().String()

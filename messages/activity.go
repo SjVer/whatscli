@@ -42,3 +42,17 @@ func (sm *SessionManager) LastReceived() time.Time {
 	}
 	return time.Time{}
 }
+
+// logDebug writes to the log, if there is one, see SessionManager.Log
+func (sm *SessionManager) logDebug(format string, args ...any) {
+	if sm.Log != nil {
+		sm.Log.Debugf(format, args...)
+	}
+}
+
+// logWarn writes a warning to the log, if there is one
+func (sm *SessionManager) logWarn(format string, args ...any) {
+	if sm.Log != nil {
+		sm.Log.Warnf(format, args...)
+	}
+}

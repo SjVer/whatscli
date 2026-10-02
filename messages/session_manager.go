@@ -505,11 +505,9 @@ func (sm *SessionManager) addContactChats() int {
 	}
 	addedChats := 0
 	for jid, contact := range contacts {
+		// without a name, the number is shown, see DisplayID
 		name, short := contactDisplayNames(contact)
-		if name == "" {
-			name = DisplayID(jid.String())
-		}
-		sm.db.AddContact(Contact{Id: jid.String(), Name: name, Short: short, ProfileName: isProfileName(contact)})
+		sm.db.AddContact(Contact{Id: jid.String(), Name: name, Short: short, ProfileName: hasOnlyPushName(contact)})
 		if jid.Server == types.DefaultUserServer {
 			sm.db.AddChat(Chat{Id: jid.String(), Name: name})
 			addedChats++
@@ -704,7 +702,7 @@ func (sm *SessionManager) execCommand(command Command) {
 		sm.setCurrentChatArchived(false)
 	case "info":
 		if checkParam(command.Params, 1) {
-			sm.uiHandler.PrintText(sm.db.GetMessageInfo(command.Params[0]) + sm.reactionInfo(command.Params[0]))
+			sm.uiHandler.PrintText(sm.db.GetMessageInfo(command.Params[0]) + sm.receiptInfo(command.Params[0]) + sm.reactionInfo(command.Params[0]))
 		} else {
 			sm.printCommandUsage("info", "[message-id[]")
 		}
@@ -865,9 +863,7 @@ func (sm *SessionManager) sendAppState(patch appstate.PatchInfo) error {
 	} else if sm.recoverAppState(err, patch.Type) {
 		return errAppStateRepairing
 	}
-	if sm.Log != nil {
-		sm.Log.Warnf("Sending %s failed, syncing it and retrying: %v", patch.Type, err)
-	}
+	sm.logWarn("Sending %s failed, syncing it and retrying: %v", patch.Type, err)
 	if syncErr := sm.client.FetchAppState(ctx, patch.Type, false, false); syncErr != nil {
 		if sm.recoverAppState(syncErr, patch.Type) {
 			return errAppStateRepairing
@@ -1093,7 +1089,7 @@ func (sm *SessionManager) reactionInfo(messageID string) string {
 func (sm *SessionManager) namedReactions(msg Message) []string {
 	reactions := make([]string, 0, len(msg.Reactions))
 	for reactor, reaction := range msg.Reactions {
-		name, _ := sm.reactorNames(reactor)
+		name, _ := sm.userNames(reactor)
 		reactions = append(reactions, reaction+" "+name)
 	}
 	sort.Strings(reactions)
@@ -1102,13 +1098,13 @@ func (sm *SessionManager) namedReactions(msg Message) []string {
 
 // ShortName returns the short name to show for a user, "You" for yourself.
 func (sm *SessionManager) ShortName(id string) string {
-	_, short := sm.reactorNames(id)
+	_, short := sm.userNames(id)
 	return short
 }
 
-// reactorNames returns the name and short name of who reacted, see
-// Message.Reactions, "You" for yourself.
-func (sm *SessionManager) reactorNames(reactor string) (string, string) {
+// userNames returns the name and short name of a user by ID, like a reactor in
+// Message.Reactions or a member in Message.Receipts, "You" for yourself.
+func (sm *SessionManager) userNames(reactor string) (string, string) {
 	if reactor == ReactorMe {
 		return "You", "You"
 	}
@@ -1285,8 +1281,13 @@ func (sm *SessionManager) sendText(wid, text, replyID string) {
 	sent, mentioned, typed := resolveMentions(text, sm.GroupMembers(wid))
 	var reply *Reply
 	ctx := &waProto.ContextInfo{}
-	if quoted, ok := sm.db.GetMessage(replyID); ok {
-		ctx = sm.replyContext(quoted)
+	if replyID != "" {
+		quoted, ok := sm.db.GetMessage(replyID)
+		if !ok {
+			sm.uiHandler.PrintError(errors.New("the message to reply to isn't loaded anymore, nothing was sent"))
+			return
+		}
+		ctx = replyContext(quoted)
 		reply = replyTo(quoted)
 	}
 	if len(mentioned) > 0 || reply != nil {
@@ -1452,7 +1453,11 @@ func (eh *eventHandler) Handle(evt interface{}) {
 		eh.sm.finishOfflineSync()
 		signal(eh.sm.OfflineSynced, struct{}{})
 	case *events.Receipt:
-		eh.handleReceipt(v)
+		if v.IsFromMe {
+			eh.handleReceipt(v)
+		} else {
+			eh.handleStatusReceipt(v)
+		}
 	case *events.AppStateSyncComplete:
 		// full syncs don't refresh the chat list per event, see refreshChats
 		if v.Name == appstate.WAPatchCriticalUnblockLow { // the contact list
@@ -1550,8 +1555,8 @@ func (sm *SessionManager) requestOfflineBatches() {
 		Tag:     "ib",
 		Content: []waBinary.Node{{Tag: "offline_batch", Attrs: waBinary.Attrs{"count": fmt.Sprint(offlineBatchSize)}}},
 	})
-	if err != nil && sm.Log != nil {
-		sm.Log.Warnf("Failed to request the offline messages in batches: %v", err)
+	if err != nil {
+		sm.logWarn("Failed to request the offline messages in batches: %v", err)
 	}
 }
 
@@ -1600,7 +1605,8 @@ func (sm *SessionManager) chatReadElsewhere(chatID string, readUntil, seenUntil 
 }
 
 // seesChat returns whether the user is looking at a chat: it is open, and
-// whatscli and its message panel or input have focus, see ChatSeen
+// whatscli and its message panel or input have focus, see ChatSeen. Messages
+// that arrive while it isn't stay new when the user looks again.
 func (sm *SessionManager) seesChat(chatID string) bool {
 	return chatID != "" && chatID == sm.currentReceiver && (sm.ChatSeen == nil || sm.ChatSeen())
 }
@@ -1771,6 +1777,9 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 			}
 			// the LID of the chat may not be mapped to its phone number yet
 			msg.ChatId = chatID
+			if msg.FromMe {
+				msg.Status = historyStatus(webMsg.GetStatus())
+			}
 			eh.sm.db.AddMessage(msg, false)
 			messageCount++
 			for _, reaction := range webMsg.GetReactions() {
@@ -1791,10 +1800,8 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 				eh.sm.db.SetChatUnarchived(chatID, lastMessage)
 			}
 		}
-		if eh.sm.Log != nil {
-			eh.sm.Log.Debugf("History conversation %s: archived=%v pinned=%v last message %s, %d messages",
-				chatID, conv.GetArchived(), conv.GetPinned() > 0, formatTimestamp(lastMessage), len(conv.GetMessages()))
-		}
+		eh.sm.logDebug("History conversation %s: archived=%v pinned=%v last message %s, %d messages",
+			chatID, conv.GetArchived(), conv.GetPinned() > 0, formatTimestamp(lastMessage), len(conv.GetMessages()))
 	}
 
 	if learnedNames {
@@ -1810,6 +1817,7 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 	if onDemand {
 		// an answer without messages doesn't say for which chat
 		if len(chatIDs) == 0 {
+			eh.sm.logDebug("Empty answer of the phone, which finishes all requested chats")
 			eh.sm.finishAllHistoryRequests()
 		}
 		for _, chatID := range chatIDs {
@@ -1919,6 +1927,23 @@ func (eh *eventHandler) contactForMessage(info types.MessageInfo) (string, strin
 // contactNames returns the id, name and short name to show for a user. Like the
 // phone, it prefers the name saved in the contacts over the user's profile name.
 func (sm *SessionManager) contactNames(jid types.JID) (string, string, string) {
+	id, name, short, ok := sm.savedNames(jid)
+	if !ok {
+		return id, sm.db.GetIdName(id), sm.db.GetIdShort(id)
+	}
+	return id, name, short
+}
+
+// realName returns the name of a user, and whether it is one, not only how
+// they are shown without one, see isFallbackName
+func (sm *SessionManager) realName(jid types.JID) (string, bool) {
+	id, name, _ := sm.contactNames(jid)
+	return name, !isFallbackName(id, name)
+}
+
+// savedNames returns the ID of a user, by phone number when it is known, and
+// their name and short name from whatsmeow's contacts, if it has one
+func (sm *SessionManager) savedNames(jid types.JID) (string, string, string, bool) {
 	jid = jid.ToNonAD()
 	// contacts are stored under the phone number, groups address users by LID,
 	// and profile names can be known under either
@@ -1936,11 +1961,11 @@ func (sm *SessionManager) contactNames(jid types.JID) (string, string, string) {
 				continue
 			}
 			if name, short := contactDisplayNames(contact); name != "" {
-				return id, name, short
+				return id, name, short, true
 			}
 		}
 	}
-	return id, sm.db.GetIdName(id), sm.db.GetIdShort(id)
+	return id, "", "", false
 }
 
 // refreshContactNames updates the sender names of the messages in memory, which

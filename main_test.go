@@ -39,17 +39,17 @@ func TestGroupedMessagesAreShownBelowOneHeader(t *testing.T) {
 	first := messages.Message{Id: "1", ContactId: "alice", ContactShort: "Alice", Timestamp: 1000, Text: "hello"}
 	next := messages.Message{Id: "2", ContactId: "alice", ContactShort: "Alice", Timestamp: 1060, Text: "again"}
 
-	firstLines := strings.Split(getTextMessageString(&first, nil), "\n")
+	firstLines := strings.Split(getTextMessageString(&first, nil, 0), "\n")
 	if len(firstLines) != 2 || !strings.Contains(firstLines[0], "Alice") || !strings.HasSuffix(firstLines[1], `hello[""]`) {
 		t.Fatalf("expected the time and name on their own line above the text, got %q", firstLines)
 	}
-	nextLine := getTextMessageString(&next, &first)
+	nextLine := getTextMessageString(&next, &first, 0)
 	if nextLine != `["2"]again[""]` {
 		t.Fatalf("expected only the text of a grouped message, without indentation, got %q", nextLine)
 	}
 
 	later := messages.Message{Id: "3", ContactId: "alice", ContactShort: "Alice", Timestamp: 2000, Text: "later"}
-	laterLines := strings.Split(getTextMessageString(&later, &next), "\n")
+	laterLines := strings.Split(getTextMessageString(&later, &next, 0), "\n")
 	if len(laterLines) != 3 || laterLines[0] != `["3"]` || !strings.Contains(laterLines[1], "Alice") {
 		t.Fatalf("expected an empty line before the header of a new group, got %q", laterLines)
 	}
@@ -106,7 +106,7 @@ func TestReactionSummary(t *testing.T) {
 	}
 	msg := messages.Message{Id: "1", ContactId: "alice", ContactShort: "Alice", Timestamp: 1000, Text: "hi",
 		Reactions: map[string]string{"me": "👍"}}
-	lines := strings.Split(getTextMessageString(&msg, nil), "\n")
+	lines := strings.Split(getTextMessageString(&msg, nil, 0), "\n")
 	if len(lines) != 3 || !strings.Contains(lines[2], "↳") || !strings.Contains(lines[2], "👍") {
 		t.Fatalf("expected the marked reactions on a line below the message, got %q", lines)
 	}
@@ -319,7 +319,7 @@ func TestReactionLinesInTheChat(t *testing.T) {
 			Reactions: map[string]string{"bob": "👍"}, ReactionTimes: map[string]int64{"bob": 1100}},
 		{Id: "2", ContactId: "alice", ContactShort: "Alice", Timestamp: 1200, Text: "never mind"},
 	}
-	out := getMessagesString(msgs)
+	out := getMessagesString(msgs, 0)
 	first := strings.Index(out, "are you coming")
 	reaction := strings.Index(out, `Bob reacted 👍 to "are you coming tonight?"`)
 	second := strings.Index(out, "never mind")
@@ -340,7 +340,7 @@ func TestReactionLinesInTheChat(t *testing.T) {
 
 	messageSearch = "coming"
 	defer func() { messageSearch = "" }()
-	if strings.Contains(getMessagesString(msgs), "reacted") {
+	if strings.Contains(getMessagesString(msgs, 0), "reacted") {
 		t.Fatal("expected search results to list only messages")
 	}
 }

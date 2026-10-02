@@ -12,7 +12,7 @@ import (
 func TestReplyIsShownAboveTheMessage(t *testing.T) {
 	msg := messages.Message{Id: "2", ContactShort: "Alice", Timestamp: 1000, Text: "yes!",
 		ReplyTo: &messages.Reply{Id: "1", Name: "Bob", Text: "dinner at 7?\nor later"}}
-	screen := drawText(t, getTextMessageString(&msg, nil))
+	screen := drawText(t, getTextMessageString(&msg, nil, 0))
 	row := func(y int) string {
 		text := ""
 		for x := 0; x < 40; x++ {
@@ -27,8 +27,11 @@ func TestReplyIsShownAboveTheMessage(t *testing.T) {
 }
 
 func TestReplyingToASelectedMessage(t *testing.T) {
+	defer func(view *tview.TextView, input *tview.TextArea, root *tview.TreeNode, chat messages.Chat, msgs []messages.Message) {
+		sessionManager, app, notices = nil, nil, map[string][]notice{}
+		textView, textInput, chatRoot, currentReceiver, chatMessages = view, input, root, chat, msgs
+	}(textView, textInput, chatRoot, currentReceiver, chatMessages)
 	sessionManager = &messages.SessionManager{CommandChannel: make(chan messages.Command, 10)}
-	defer func() { sessionManager = nil }()
 	app = tview.NewApplication()
 	notices = map[string][]notice{}
 	chatRoot = tview.NewTreeNode("Chats")

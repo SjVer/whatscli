@@ -51,9 +51,8 @@ func TestRepliesShowWhatTheyReplyTo(t *testing.T) {
 }
 
 func TestReplyContextRefersToTheMessage(t *testing.T) {
-	sm := newTestSession(&recordingUi{})
 	quoted := Message{Id: "m1", SenderId: "111:3@s.whatsapp.net", RawMessage: &waProto.Message{Conversation: proto.String("hi")}}
-	ctx := sm.replyContext(quoted)
+	ctx := replyContext(quoted)
 	if ctx.GetStanzaID() != "m1" || ctx.GetParticipant() != "111@s.whatsapp.net" || ctx.GetQuotedMessage().GetConversation() != "hi" {
 		t.Errorf("unexpected context %v", ctx)
 	}

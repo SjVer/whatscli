@@ -60,9 +60,10 @@ const (
 
 // internal message representation to abstract from message lib
 type Message struct {
-	Id           string
-	ChatId       string // the source of the message (group id or contact id)
-	SenderId     string
+	Id       string
+	ChatId   string // the source of the message (group id or contact id)
+	SenderId string
+	// who sent it, or for the user's messages in a chat with one person, that person
 	ContactId    string
 	ContactName  string
 	ContactShort string
@@ -74,11 +75,17 @@ type Message struct {
 	MimeType     string
 	FileName     string
 	Unread       bool
-	// the mentions in Text as they are shown, like @Alice
+	// the mentions in Text as they are shown, like @Alice, see showMentions
 	Mentions []string `json:",omitempty"`
-	// the message this one replies to
-	ReplyTo    *Reply           `json:",omitempty"`
-	RawMessage *waProto.Message `json:"-"` // saved as SavedMessage.Raw
+	// the message this one replies to, see replyOf
+	ReplyTo *Reply `json:",omitempty"`
+	// for the user's messages: how far it got, at least StatusSent, which only
+	// goes up, see MessageStatus
+	Status MessageStatus `json:",omitempty"`
+	// in groups, how far a message of the user got for each member but the
+	// user, by userKey, see SetReceipt
+	Receipts   map[string]MessageStatus `json:",omitempty"`
+	RawMessage *waProto.Message         `json:"-"` // saved as SavedMessage.Raw
 	// emoji reactions by who reacted, see ReactorMe, and when they were given
 	Reactions     map[string]string `json:",omitempty"`
 	ReactionTimes map[string]int64  `json:",omitempty"`
@@ -135,7 +142,8 @@ type Contact struct {
 	Id    string
 	Name  string
 	Short string
-	// whether the name is only their profile name, see SessionManager.IsProfileName
+	// whether the name is only their profile name, see SessionManager.IsProfileName,
+	// set when the contacts are loaded, see addContactChats
 	ProfileName bool
 }
 

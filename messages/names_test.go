@@ -1,6 +1,8 @@
 package messages
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"go.mau.fi/whatsmeow/types"
@@ -50,5 +52,30 @@ func TestNumbersArentKeptAsChatNames(t *testing.T) {
 	db.AddMessage(Message{Id: "m2", ChatId: chat, ContactName: "Alice", Timestamp: 200}, false)
 	if name := db.GetIdName(chat); name != "Alice" {
 		t.Errorf("expected the profile name once it is known, got %q", name)
+	}
+}
+
+func TestMentionsOfUnknownPeopleKeepTheirNumber(t *testing.T) {
+	sm := newTestSession(&recordingUi{})
+	text, shown := sm.showMentions("hi @31612345678", []string{"31612345678@s.whatsapp.net"})
+	if text != "hi @31612345678" || len(shown) != 1 || shown[0] != "@31612345678" {
+		t.Errorf("expected the number to stay, got %q and %q", text, shown)
+	}
+}
+
+func TestSavedNumbersAreDroppedAsChatNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chats.json")
+	os.WriteFile(path, []byte(`[{"Id":"31612345678@s.whatsapp.net","Name":"31612345678","LastMessage":100,
+		"Recent":[{"Id":"m1","ChatId":"31612345678@s.whatsapp.net","FromMe":true,"Timestamp":100}]}]`), 0600)
+	db := &MessageDatabase{}
+	db.Init()
+	if err := db.LoadChats(path, 50); err != nil {
+		t.Fatal(err)
+	}
+	if chats := db.GetChatIds(); chats[0].Name != "" {
+		t.Errorf("expected the saved number not to be the name, got %q", chats[0].Name)
+	}
+	if msg, _ := db.GetMessage("m1"); msg.Status != StatusSent {
+		t.Errorf("expected a saved message of the user to be sent at least, got %v", msg.Status)
 	}
 }

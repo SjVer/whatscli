@@ -91,6 +91,8 @@ func main() {
 	if screen, err := newFocusScreen(); err == nil {
 		app.SetScreen(screen) // which starts it
 		screen.EnableFocus()
+	} else if logger != nil {
+		logger.Warnf("Failed to open the screen, focus isn't noted: %v", err)
 	}
 	sessionManager.ChatSeen = chatSeen
 
@@ -145,6 +147,10 @@ func main() {
 		drawSuggestions(screen)
 		updateTitle(screen)
 		chatListFocused.Store(treeView.HasFocus())
+		// the panel is sized when it is drawn
+		if messageWidth() != renderedWidth && !printedSinceRender.Load() {
+			go app.QueueUpdateDraw(renderForWidth)
+		}
 	})
 	app.EnableMouse(true)
 	// pasted text arrives in one piece, so line breaks don't send it line by line
@@ -1060,7 +1066,9 @@ func SetDisplayedChat(wid messages.Chat) {
 }
 
 // get a string representation of all messages for chat
-func getMessagesString(msgs []messages.Message) string {
+// getMessagesString returns the messages as they are shown in the message
+// panel of the width, see getTextMessageString
+func getMessagesString(msgs []messages.Message, width int) string {
 	// the messages and, unless searching, the reactions to them by when they were given
 	type chatLine struct {
 		msg     *messages.Message
@@ -1102,7 +1110,7 @@ func getMessagesString(msgs []messages.Message) string {
 		if messageSearch != "" {
 			prev = nil
 		}
-		out += getTextMessageString(line.msg, prev) + "\n"
+		out += getTextMessageString(line.msg, prev, width) + "\n"
 		prev = line.msg
 	}
 	endedWithReaction = prev == &afterReaction
@@ -1201,7 +1209,9 @@ func formatMessageTime(sent time.Time, now time.Time) string {
 
 // create a formatted string with regions based on message ID from a text message
 // TODO: optimize, use Sprintf etc
-func getTextMessageString(msg *messages.Message, prev *messages.Message) string {
+// The ticks of the user's messages are placed for the width of the message
+// panel, none for 0, see withTicks.
+func getTextMessageString(msg *messages.Message, prev *messages.Message, width int) string {
 	colorMe := config.Config.Colors.ChatMe
 	colorContact := config.Config.Colors.ChatContact
 	out := ""
@@ -1233,6 +1243,9 @@ func getTextMessageString(msg *messages.Message, prev *messages.Message) string 
 	out += header
 	if msg.ReplyTo != nil {
 		out += replyLine(msg.ReplyTo)
+	}
+	if msg.FromMe {
+		text = withTicks(text, statusTicks(msg.Status), width)
 	}
 	out += text
 	// marked so they can't be mistaken for a message that is only an emoji
@@ -1269,7 +1282,7 @@ func (u UiHandler) NewMessage(msg messages.Message) {
 			prev = &curRegions[len(curRegions)-1]
 		}
 		endedWithReaction = false
-		fmt.Fprintln(textView, getTextMessageString(&msg, prev))
+		fmt.Fprintln(textView, getTextMessageString(&msg, prev, messageWidth()))
 		curRegions = append(curRegions, msg)
 	})
 }
@@ -1284,6 +1297,7 @@ func (u UiHandler) NewScreen(msgs []messages.Message) {
 // shows the messages of the displayed chat, or the ones matching the search
 func renderMessages() {
 	textView.Clear()
+	renderedWidth = messageWidth()
 	shown := chatMessages
 	if messageSearch != "" {
 		shown = nil
@@ -1295,7 +1309,7 @@ func renderMessages() {
 		PrintText(fmt.Sprintf("[::d]%d of %d loaded messages contain \"%s\", press %s to load older ones, %ssearch to show all[::-]\n",
 			len(shown), len(chatMessages), tview.Escape(messageSearch), config.Config.Keymap.CommandBacklog, config.Config.General.CmdPrefix))
 	}
-	screen := getMessagesString(shown)
+	screen := getMessagesString(shown, renderedWidth)
 	fmt.Fprint(textView, screen)
 	curRegions = shown
 	if screen == "" && messageSearch == "" {

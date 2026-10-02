@@ -105,6 +105,9 @@ func (md *MessageDatabase) LoadChats(path string, savedMessages int) error {
 					msg.RawMessage = nil
 				}
 			}
+			if msg.FromMe {
+				msg.Status = max(msg.Status, StatusSent) // saved before statuses were
+			}
 			if _, ok := md.messagesById[msg.Id]; !ok {
 				md.messagesById[msg.Id] = msg
 				md.messages[chat.Id] = append(md.messages[chat.Id], msg)
@@ -337,6 +340,7 @@ func (md *MessageDatabase) AddMessage(msg Message, markUnread bool) bool {
 		if existing.ReplyTo == nil && msg.ReplyTo != nil {
 			existing.ReplyTo = msg.ReplyTo
 		}
+		existing.Status = max(existing.Status, msg.Status)
 		wasUnread := existing.Unread
 		existing.Unread = existing.Unread || (markUnread && !md.readOnOtherDeviceLocked(existing))
 		// counted once
@@ -347,6 +351,9 @@ func (md *MessageDatabase) AddMessage(msg Message, markUnread bool) bool {
 		return false
 	}
 
+	if msg.FromMe {
+		msg.Status = max(msg.Status, StatusSent) // or it wouldn't be there
+	}
 	msg.Unread = markUnread && !md.readOnOtherDeviceLocked(msg)
 	markUnread = msg.Unread
 	for reactor, pending := range md.pendingReactions[msg.Id] {
@@ -619,6 +626,38 @@ func (md *MessageDatabase) SetReaction(messageID, reactor, reaction string, at i
 	md.scheduleSaveLocked()
 	md.chatLock.Unlock()
 	return msg.ChatId, true
+}
+
+// SetReceipt records how far a message of the user got for a member of its
+// chat. In groups, status returns the status of the message from the receipts
+// of all members. It returns the new status of the message, StatusUnknown if
+// it didn't change, and whether it is a message of the user that is loaded.
+func (md *MessageDatabase) SetReceipt(id, member string, got MessageStatus, status func(receipts map[string]MessageStatus) MessageStatus) (MessageStatus, bool) {
+	md.messageLock.Lock()
+	defer md.messageLock.Unlock()
+	msg, ok := md.messagesById[id]
+	if !ok || !msg.FromMe {
+		return StatusUnknown, false
+	}
+	updated := got
+	if isGroupID(msg.ChatId) {
+		if msg.Receipts[member] >= got {
+			return StatusUnknown, true
+		}
+		msg.Receipts = withValue(msg.Receipts, member, got, false)
+		updated = status(msg.Receipts)
+	}
+	if updated <= msg.Status {
+		updated = StatusUnknown // no change, but the receipt is kept for the info
+	} else {
+		msg.Status = updated
+	}
+	md.messagesById[id] = msg
+	md.replaceMessageLocked(msg)
+	md.chatLock.Lock()
+	md.scheduleSaveLocked()
+	md.chatLock.Unlock()
+	return updated, true
 }
 
 // pendingReaction is a reaction to a message that is not loaded yet

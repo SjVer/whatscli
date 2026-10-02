@@ -27,9 +27,9 @@ func contactDisplayNames(contact types.ContactInfo) (string, string) {
 	return contact.BusinessName, contact.BusinessName
 }
 
-// isProfileName returns whether the name of a contact is only their profile
+// hasOnlyPushName returns whether the name of a contact is only their profile
 // name, which they chose themselves, as they aren't saved in the contacts
-func isProfileName(contact types.ContactInfo) bool {
+func hasOnlyPushName(contact types.ContactInfo) bool {
 	return contact.FullName == "" && contact.FirstName == "" && contact.PushName != ""
 }
 
@@ -82,13 +82,19 @@ func (sm *SessionManager) learnPushName(user types.JID, name string) bool {
 	ctx := context.Background()
 	user = user.ToNonAD()
 	changed, _, err := sm.client.Store.Contacts.PutPushName(ctx, user, name)
-	if err != nil || !changed {
+	if err != nil {
+		sm.logWarn("Failed to store the profile name of %s: %v", user, err)
+		return false
+	} else if !changed {
 		return false
 	}
 	// also under the phone number or LID, as whatsmeow does
 	if alt, err := sm.client.Store.GetAltJID(ctx, user); err == nil && !alt.IsEmpty() {
-		sm.client.Store.Contacts.PutPushName(ctx, alt.ToNonAD(), name)
+		if _, _, err = sm.client.Store.Contacts.PutPushName(ctx, alt.ToNonAD(), name); err != nil {
+			sm.logWarn("Failed to store the profile name of %s: %v", alt, err)
+		}
 	}
+	sm.logDebug("Learned the profile name of %s from a message loaded from the phone", user)
 	return true
 }
 

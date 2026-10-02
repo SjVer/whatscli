@@ -39,8 +39,8 @@ func styleAt(screen tcell.SimulationScreen, x, y int) tcell.Style {
 }
 
 func TestMessageFormattingIsDrawn(t *testing.T) {
-	msg := messages.Message{Id: "1", FromMe: true, Timestamp: 1000, Text: "_it_ *bo*"}
-	screen := drawText(t, getTextMessageString(&msg, nil))
+	msg := messages.Message{Id: "1", ContactShort: "Bob", Timestamp: 1000, Text: "_it_ *bo*"}
+	screen := drawText(t, getTextMessageString(&msg, nil, 0))
 	// the text is on the line below the header
 	if _, _, attr := styleAt(screen, 0, 1).Decompose(); attr&tcell.AttrItalic == 0 {
 		t.Error("expected _it_ to be drawn italic")
@@ -233,7 +233,7 @@ func TestUnreadMessagesAndReactionsAreHighlighted(t *testing.T) {
 	mine := messages.Message{Id: "2", FromMe: true, Timestamp: 1100, Text: "mine",
 		Reactions: map[string]string{"alice": "👍"}, ReactionTimes: map[string]int64{"alice": 1300}}
 	fresh := messages.Message{Id: "3", ContactId: "alice", ContactShort: "Alice", Timestamp: 1200, Text: "new", Unread: true}
-	screen := drawText(t, getTextMessageString(&read, nil)+"\n"+getTextMessageString(&fresh, &read))
+	screen := drawText(t, getTextMessageString(&read, nil, 0)+"\n"+getTextMessageString(&fresh, &read, 0))
 	colorAt := func(x, y int) tcell.Color {
 		fg, _, _ := styleAt(screen, x, y).Decompose()
 		return fg
@@ -246,7 +246,7 @@ func TestUnreadMessagesAndReactionsAreHighlighted(t *testing.T) {
 		t.Errorf("expected the unread message to have its own highlighted time, got %c", r)
 	}
 
-	screen = drawText(t, getTextMessageString(&mine, nil))
+	screen = drawText(t, getTextMessageString(&mine, nil, 0))
 	found := false
 	for x := 0; x < 10; x++ {
 		if r, _, _, _ := screen.GetContent(x, 2); r == '↳' {
@@ -260,7 +260,7 @@ func TestUnreadMessagesAndReactionsAreHighlighted(t *testing.T) {
 		t.Fatal("expected the reactions below the message")
 	}
 	currentReceiver = messages.Chat{Id: "alice"}
-	screen = drawText(t, getTextMessageString(&mine, nil))
+	screen = drawText(t, getTextMessageString(&mine, nil, 0))
 	for x := 0; x < 10; x++ {
 		if r, _, _, _ := screen.GetContent(x, 2); r == '↳' && colorAt(x, 2) == unread {
 			t.Error("expected the arrow of seen reactions not to be highlighted")
@@ -288,7 +288,7 @@ func TestProfileNamesAreItalic(t *testing.T) {
 	isProfileName = func(id string) bool { return id == "bob" }
 	// the attributes of the first letter of a name in the header
 	nameStyle := func(msg messages.Message, initial rune) tcell.AttrMask {
-		screen := drawText(t, getTextMessageString(&msg, nil))
+		screen := drawText(t, getTextMessageString(&msg, nil, 0))
 		for x := 0; x < 40; x++ {
 			if r, _, _, _ := screen.GetContent(x, 0); r == initial {
 				_, _, attr := styleAt(screen, x, 0).Decompose()

@@ -87,7 +87,7 @@ func runDump(offlineWait time.Duration, chatID string, logger waLog.Logger) int 
 // dumpChat loads a chat from the phone like opening it in the UI does, and prints it.
 func dumpChat(sm *messages.SessionManager, chatID string) int {
 	start := time.Now()
-	if err := sm.RequestChatHistory(chatID); err != nil {
+	if err := sm.LoadChat(chatID); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}

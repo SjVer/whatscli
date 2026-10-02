@@ -21,8 +21,9 @@ func linkCodeHint() string {
 }
 
 // LinkWithCode asks WhatsApp for a code to link whatscli with the phone of the
-// number, while the QR code is shown. It runs in the background, as the
-// session manager waits for the phone to link meanwhile.
+// number, while the QR code is shown. It is called from the UI, not the session
+// manager, which waits for the phone to link meanwhile: the client is set
+// before linking starts, see the linking flag.
 func (sm *SessionManager) LinkWithCode(phone string) {
 	client := sm.client
 	if !sm.linking.Load() || client == nil {
