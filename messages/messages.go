@@ -20,8 +20,8 @@ type UiMessageHandler interface {
 	// empty text removes it.
 	SetNotice(chatID, key, text string)
 	SetStatus(SessionStatus)
-	// OpenFile opens a file or URL with a command, or the default app if it is empty
-	OpenFile(target string, command string)
+	// OpenFile opens a file or URL with its default app
+	OpenFile(target string)
 	// CloseChat goes back to the chat list if the chat is open
 	CloseChat(chatID string)
 	GetWriter() io.Writer
@@ -30,15 +30,13 @@ type UiMessageHandler interface {
 // data struct for current session status
 type SessionStatus struct {
 	Connected bool
-	LastSeen  string
 	// what whatscli is waiting for, e.g. messages from the phone
 	Activity string
 }
 
-// message struct for status messages
+// StatusMsg tells the manager loop that the connection changed, see sendStatus
 type StatusMsg struct {
 	connected bool
-	err       error
 }
 
 // message object for commands
@@ -155,4 +153,3 @@ func isGroupID(id string) bool {
 }
 
 const CONTACTSUFFIX = "@s.whatsapp.net"
-const STATUSSUFFIX = "status@broadcast"

@@ -32,6 +32,13 @@ type chatPictures struct {
 	checked map[string]checkedPicture
 }
 
+// forget forgets the checked pictures, e.g. of an account that was logged out
+func (pictures *chatPictures) forget() {
+	pictures.lock.Lock()
+	defer pictures.lock.Unlock()
+	pictures.checked = nil
+}
+
 // checkedPicture is the file of a chat's picture, "" if it has none, and when that was checked
 type checkedPicture struct {
 	path string
@@ -103,14 +110,17 @@ func (sm *SessionManager) downloadChatPicture(chatID string) (string, bool) {
 	if err != nil {
 		return "", true // not a picture that can be shown
 	}
+	if err = os.WriteFile(path, round, 0600); err != nil {
+		sm.logWarn("Failed to save the picture of %s: %v", chatID, err)
+		return "", false
+	}
 	// the chat's earlier pictures
 	if old, err := filepath.Glob(filepath.Join(dir, pictureFileName(jid.User, "*"))); err == nil {
 		for _, file := range old {
-			os.Remove(file)
+			if file != path {
+				os.Remove(file)
+			}
 		}
-	}
-	if os.WriteFile(path, round, 0600) != nil {
-		return "", false
 	}
 	return path, true
 }

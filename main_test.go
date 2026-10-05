@@ -345,21 +345,6 @@ func TestReactionLinesInTheChat(t *testing.T) {
 	}
 }
 
-func TestSplitCommand(t *testing.T) {
-	tests := map[string][]string{
-		"jp2a --color":                   {"jp2a", "--color"},
-		`"C:\Program Files\mpv\mpv.exe"`: {`C:\Program Files\mpv\mpv.exe`},
-		`vlc  --fullscreen "a b"`:        {"vlc", "--fullscreen", "a b"},
-		"   ":                            nil,
-	}
-	for command, expected := range tests {
-		actual := splitCommand(command)
-		if strings.Join(actual, "|") != strings.Join(expected, "|") || len(actual) != len(expected) {
-			t.Errorf("%q: expected %q, got %q", command, expected, actual)
-		}
-	}
-}
-
 func TestNotificationIconIsAPNG(t *testing.T) {
 	icon, err := png.Decode(bytes.NewReader(notificationIcon))
 	if err != nil {

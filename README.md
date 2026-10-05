@@ -76,13 +76,7 @@ When paths are given for commands you don't need to surround the path in quotes,
 
 ### Messages
 
-When pressing `Ctrl-w` (default mapping) you enter "message selection mode" which allows selecting a single message and performing operations on them. For example pressing `o` while a message is selected allows opening any attachments through an external application.
-
-#### Image display
-
-You can display images in whatscli using external programs that convert the image to UTF characters. I found that `jp2a` works well for jpeg images, it is available through package managers on most systems. However the "image quality" leaves a lot to be desired. The [PIXterm](https://github.com/eliukblau/pixterm) app allows displaying true-color versions of the images which are quite recognizable already.
-
-To configure the used command and its parameters edit the `show_command` parameter in `whatscli.config`, see `/help` for the config file location.
+When pressing `Ctrl-w` (default mapping) you enter "message selection mode" which allows selecting a single message and performing operations on them. For example pressing `o` while a message is selected opens its attachment with the default app of your system.
 
 #### Copy-Pasting User IDs
 

@@ -142,7 +142,11 @@ func (cs *chatSync) finishLocked() {
 	if cs.idleTimer != nil {
 		cs.idleTimer.Stop()
 	}
-	cs.sm.setChatSync(nil)
+	cs.sm.chatSyncLock.Lock()
+	if cs.sm.chatSync == cs { // not a /relink that was started after it
+		cs.sm.chatSync = nil
+	}
+	cs.sm.chatSyncLock.Unlock()
 
 	shown, archived := 0, 0
 	for _, chat := range cs.sm.db.GetChatIds() {

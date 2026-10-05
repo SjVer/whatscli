@@ -10,7 +10,6 @@ import (
 )
 
 var configFilePath string
-var cfg *ini.File
 
 type IniFile struct {
 	*General
@@ -21,16 +20,11 @@ type IniFile struct {
 
 type General struct {
 	DownloadPath string
-	PreviewPath  string
-	CmdPrefix    string
-	// commands that open attachments, with the file added; the default app if empty
-	ImageCommand        string
-	VideoCommand        string
-	AudioCommand        string
-	DocumentCommand     string
+	// where opened attachments are downloaded, a folder in the temporary folder if empty
+	PreviewPath         string
+	CmdPrefix           string
 	EnableNotifications bool
 	UseTerminalBell     bool
-	NotificationTimeout int64
 	BacklogMsgQuantity  int
 	// typing :name: gives emoji, with suggestions
 	EmojiShortcodes bool
@@ -52,16 +46,20 @@ type Keymap struct {
 	CommandHelp     string
 	MessageDownload string
 	MessageOpen     string
-	MessageShow     string
 	MessageUrl      string
 	MessageInfo     string
 	MessageRevoke   string
 	MessageReact    string
 	MessageReply    string
+	// archives or unarchives the selected chat in the chat list
+	ChatArchive string
 }
 
 type Ui struct {
 	ChatSidebarWidth int
+	// how many lines the messages scroll with the mouse wheel and Up/Down, and with PgUp/PgDn
+	ScrollLines int
+	PageLines   int
 }
 
 type Colors struct {
@@ -88,11 +86,10 @@ type Colors struct {
 var Config = IniFile{
 	&General{
 		DownloadPath:        GetHomeDir() + "Downloads",
-		PreviewPath:         GetHomeDir() + "Downloads",
+		PreviewPath:         "", // a folder in the temporary folder, see previewDir
 		CmdPrefix:           "/",
 		EnableNotifications: false,
 		UseTerminalBell:     false,
-		NotificationTimeout: 60,
 		BacklogMsgQuantity:  10,
 		EmojiShortcodes:     true,
 		MarkReadOnSend:      false,
@@ -116,10 +113,12 @@ var Config = IniFile{
 		MessageRevoke:   "r",
 		MessageReact:    "e",
 		MessageReply:    "a",
-		MessageShow:     "s",
+		ChatArchive:     "a",
 	},
 	&Ui{
 		ChatSidebarWidth: 30,
+		ScrollLines:      1,
+		PageLines:        10,
 	},
 	&Colors{
 		Background:        "black",
@@ -163,11 +162,6 @@ func InitConfig() {
 			if section, err := cfg.GetSection("colors"); err == nil {
 				section.MapTo(&Config.Colors)
 			}
-			//TODO: only save if changes
-			//newCfg := ini.Empty()
-			//if err = ini.ReflectFromWithMapper(newCfg, &Config, ini.TitleUnderscore); err == nil {
-			//err = newCfg.SaveTo(configFilePath)
-			//}
 		} else {
 			cfg = ini.Empty()
 			cfg.NameMapper = ini.TitleUnderscore
@@ -195,8 +189,10 @@ func GetSessionFilePath() string {
 
 // gets the OS home dir with a path separator at the end
 func GetHomeDir() string {
-	usr, err := user.Current()
-	if err != nil {
+	if usr, err := user.Current(); err == nil {
+		return usr.HomeDir + string(os.PathSeparator)
+	} else if home, err := os.UserHomeDir(); err == nil {
+		return home + string(os.PathSeparator)
 	}
-	return usr.HomeDir + string(os.PathSeparator)
+	return ""
 }

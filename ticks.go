@@ -58,9 +58,13 @@ func messageWidth() int {
 	return width
 }
 
+// widthRenderQueued is whether renderForWidth is queued, once while resizing
+var widthRenderQueued bool
+
 // renderForWidth shows the messages again when the panel's width changed, which
 // moves the ticks
 func renderForWidth() {
+	widthRenderQueued = false
 	if width := messageWidth(); width != renderedWidth && !printedSinceRender.Load() {
 		renderMessages()
 	}

@@ -2,10 +2,8 @@ package main
 
 import (
 	"fmt"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/normen/whatscli/config"
@@ -183,23 +181,6 @@ func TestEscapeInEmptyInputScrollsToTheNewestMessages(t *testing.T) {
 	}
 }
 
-func TestOpenWithCommandShowsItsOutput(t *testing.T) {
-	textView = tview.NewTextView().SetDynamicColors(true)
-	command := "echo"
-	if runtime.GOOS == "windows" {
-		command = "cmd /c echo"
-	}
-	if err := openWithCommand(command, "photo.jpg"); err != nil {
-		t.Fatal(err)
-	}
-	// the command runs in the background
-	for start := time.Now(); !strings.Contains(textView.GetText(true), "photo.jpg"); time.Sleep(10 * time.Millisecond) {
-		if time.Since(start) > 5*time.Second {
-			t.Fatalf("expected the output of the command with the file, got %q", textView.GetText(true))
-		}
-	}
-}
-
 func TestOpeningAChatScrollsToItsNewestMessages(t *testing.T) {
 	sessionManager = &messages.SessionManager{CommandChannel: make(chan messages.Command, 10)}
 	defer func() { sessionManager = nil }()
@@ -303,5 +284,148 @@ func TestProfileNamesAreItalic(t *testing.T) {
 	}
 	if nameStyle(messages.Message{Id: "2", ContactId: "alice", ContactShort: "Alice", Text: "hi"}, 'A')&tcell.AttrItalic != 0 {
 		t.Error("expected a saved name not to be italic")
+	}
+}
+
+func TestShowingAnAttachmentKeepsThePlace(t *testing.T) {
+	defer func(view *tview.TextView) { sessionManager, app, textView = nil, nil, view }(textView)
+	sessionManager = &messages.SessionManager{CommandChannel: make(chan messages.Command, 10)}
+	app = tview.NewApplication()
+	textView = tview.NewTextView().SetDynamicColors(true).SetRegions(true)
+	textView.SetRect(0, 0, 20, 3)
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(textView, "[\"m%d\"]line %d[\"\"]\n", i, i)
+	}
+	textView.Highlight("m2")
+	textView.ScrollTo(2, 0)
+
+	handleMessageCommand("open")(nil)
+	if command := <-sessionManager.CommandChannel; command.Name != "open" || command.Params[0] != "m2" {
+		t.Fatalf("expected the selected message to be shown, got %+v", command)
+	}
+	textView.Draw(newScreen(t, 20, 3))
+	if row, _ := textView.GetScrollOffset(); row != 2 || len(textView.GetHighlights()) == 0 {
+		t.Errorf("expected the place and the selection to stay, got row %d and %v", row, textView.GetHighlights())
+	}
+}
+
+func TestScrollingByTheConfiguredLines(t *testing.T) {
+	defer func(view *tview.TextView, lines int) { textView, config.Config.Ui.ScrollLines = view, lines }(textView, config.Config.Ui.ScrollLines)
+	config.Config.Ui.ScrollLines = 3
+	textView = tview.NewTextView()
+	textView.SetRect(0, 0, 20, 5)
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(textView, "line %d\n", i)
+	}
+	screen := newScreen(t, 20, 5)
+	textView.ScrollTo(10, 0)
+	scrollWithWheel(tview.MouseScrollUp, nil)
+	textView.Draw(screen)
+	if row, _ := textView.GetScrollOffset(); row != 7 {
+		t.Errorf("expected the wheel to scroll 3 lines up, got row %d", row)
+	}
+	// scrolling down to the end follows new messages again
+	for i := 0; i < 10; i++ {
+		scrollWithWheel(tview.MouseScrollDown, nil)
+	}
+	fmt.Fprintln(textView, "newest")
+	textView.Draw(screen)
+	last, _, _, _ := screen.GetContent(0, 4)
+	beforeLast, _, _, _ := screen.GetContent(0, 3)
+	if last != 'n' && beforeLast != 'n' {
+		t.Errorf("expected the newest line at the bottom after scrolling to the end")
+	}
+}
+
+func TestShowingTheChatListAgainKeepsTheOpenChat(t *testing.T) {
+	defer func(view *tview.TextView, tree *tview.TreeView, root *tview.TreeNode, chat messages.Chat, chats []messages.Chat) {
+		sessionManager, textView, treeView, chatRoot, currentReceiver, allChats = nil, view, tree, root, chat, chats
+	}(textView, treeView, chatRoot, currentReceiver, allChats)
+	sessionManager = &messages.SessionManager{CommandChannel: make(chan messages.Command, 10)}
+	textView = tview.NewTextView()
+	MakeTree()
+	treeView.SetRect(0, 0, 30, 10)
+	alice := messages.Chat{Id: "alice", Name: "Alice"}
+	allChats = []messages.Chat{alice, {Id: "bob", Name: "Bob"}}
+	currentReceiver = alice
+	renderChats()
+	treeView.Draw(newScreen(t, 30, 10))
+	fmt.Fprint(textView, "info of a message")
+
+	// e.g. when a message arrived
+	allChats[0].Unread = 1
+	renderChats()
+	treeView.Draw(newScreen(t, 30, 10))
+	if len(sessionManager.CommandChannel) != 0 || textView.GetText(true) != "info of a message" {
+		t.Errorf("expected the open chat to stay as it is, got %d commands and %q", len(sessionManager.CommandChannel), textView.GetText(true))
+	}
+	if currentReceiver.Unread != 1 {
+		t.Error("expected the open chat to be the one of the new list")
+	}
+}
+
+func TestArchiveKeyOfTheChatList(t *testing.T) {
+	defer func(tree *tview.TreeView) { sessionManager, treeView = nil, tree }(treeView)
+	sessionManager = &messages.SessionManager{CommandChannel: make(chan messages.Command, 10)}
+	for _, test := range []struct {
+		chat    messages.Chat
+		command string
+	}{
+		{messages.Chat{Id: "alice"}, "archive"},
+		{messages.Chat{Id: "bob", InArchive: true}, "unarchive"},
+	} {
+		treeView = tview.NewTreeView().SetCurrentNode(tview.NewTreeNode("").SetReference(test.chat))
+		handleChatArchive(nil)
+		if command := <-sessionManager.CommandChannel; command.Name != test.command || command.Params[0] != test.chat.Id {
+			t.Errorf("expected %s of %s, got %+v", test.command, test.chat.Id, command)
+		}
+	}
+	// nothing for the archived chats folder
+	treeView = tview.NewTreeView().SetCurrentNode(tview.NewTreeNode("Archived").SetReference("archived"))
+	handleChatArchive(nil)
+	if len(sessionManager.CommandChannel) != 0 {
+		t.Error("expected the folder not to be archived")
+	}
+}
+
+func TestAMessageThatArrivesLooksLikeTheOthers(t *testing.T) {
+	defer func(view *tview.TextView, chat messages.Chat) { textView, currentReceiver = view, chat }(textView, currentReceiver)
+	notices, messageSearch = map[string][]notice{}, ""
+	currentReceiver = messages.Chat{Id: "alice"}
+	shown := []messages.Message{
+		{Id: "1", ChatId: "alice", ContactId: "alice", ContactShort: "Alice", Timestamp: 1000, Text: "hi",
+			Reactions: map[string]string{messages.ReactorMe: "👍"}, ReactionTimes: map[string]int64{messages.ReactorMe: 1050}},
+		{Id: "2", ChatId: "alice", FromMe: true, Timestamp: 1100, Text: "hello there", Status: messages.StatusRead},
+	}
+	screenOf := func() string {
+		screen := newScreen(t, 40, 20)
+		textView.Draw(screen)
+		out := ""
+		for y := 0; y < 20; y++ {
+			for x := 0; x < 40; x++ {
+				r, _, _, _ := screen.GetContent(x, y)
+				out += string(r)
+			}
+			out += "\n"
+		}
+		return out
+	}
+	for _, arrived := range []messages.Message{
+		{Id: "3", ChatId: "alice", ContactId: "alice", ContactShort: "Alice", Timestamp: 1200, Text: "how are you", Unread: true},
+		{Id: "4", ChatId: "alice", FromMe: true, Timestamp: 1150, Text: "more", Status: messages.StatusSent},
+	} {
+		textView = tview.NewTextView().SetDynamicColors(true).SetRegions(true).SetWordWrap(true)
+		textView.SetRect(0, 0, 40, 20)
+		chatMessages = append([]messages.Message(nil), shown...)
+		renderMessages()
+		// drawn before it arrives, which tview writes to differently
+		textView.Draw(newScreen(t, 40, 20))
+		showNewMessage(arrived)
+		added := screenOf()
+		chatMessages = append(append([]messages.Message(nil), shown...), arrived)
+		renderMessages()
+		if full := screenOf(); added != full {
+			t.Errorf("expected message %s to look as when the chat is shown again:\n%s\ngot:\n%s", arrived.Id, full, added)
+		}
 	}
 }

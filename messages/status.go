@@ -77,14 +77,8 @@ func (eh *eventHandler) handleStatusReceipt(evt *events.Receipt) {
 	}
 	chatID := eh.sm.chatIdForJID(evt.Chat)
 	member := eh.sm.userKey(evt.Sender)
-	var members []string
-	if isGroupID(chatID) {
-		for _, known := range eh.sm.GroupMembers(chatID) {
-			if jid, err := types.ParseJID(known.Id); err == nil {
-				members = append(members, eh.sm.userKey(jid))
-			}
-		}
-	}
+	// until they are loaded, see loadGroupMembers
+	_, members := eh.sm.loadedMembers(chatID)
 	changed := false
 	for _, id := range evt.MessageIDs {
 		updated, ok := eh.sm.db.SetReceipt(id, member, status, func(receipts map[string]MessageStatus) MessageStatus {

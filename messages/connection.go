@@ -25,14 +25,17 @@ func (w *connectionWatch) disconnected() {
 	w.lock.Lock()
 	defer w.lock.Unlock()
 	if w.timer == nil && !w.notified {
-		w.timer = time.AfterFunc(connectionLostDelay, func() {
+		var timer *time.Timer
+		timer = time.AfterFunc(connectionLostDelay, func() {
 			w.lock.Lock()
 			defer w.lock.Unlock()
-			if w.timer != nil {
+			// not a later outage, which has a timer of its own
+			if w.timer == timer {
 				w.timer = nil
 				w.notifyLocked(connectionLostText)
 			}
 		})
+		w.timer = timer
 	}
 }
 

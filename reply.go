@@ -71,5 +71,5 @@ func sendMessage(text string) {
 		command = messages.Command{Name: "reply", Params: []string{currentReceiver.Id, replyTarget, text}}
 		cancelReply()
 	}
-	sessionManager.CommandChannel <- command
+	sendCommand(command)
 }

@@ -34,6 +34,8 @@ type MessageDatabase struct {
 	contactLock sync.RWMutex
 	chatLock    sync.RWMutex
 	messageLock sync.RWMutex
+	// held while the chats are written, which the save timer and Close can do at once
+	saveLock sync.Mutex
 }
 
 // Init initializes the message database.
@@ -93,6 +95,7 @@ func (md *MessageDatabase) LoadChats(path string, savedMessages int) error {
 		return err
 	}
 	for _, chat := range chats {
+		// counted again from the saved messages below
 		chat.Unread = 0
 		if isFallbackName(chat.Id, chat.Name) {
 			chat.Name = "" // saved by older versions, see DisplayID
@@ -111,6 +114,9 @@ func (md *MessageDatabase) LoadChats(path string, savedMessages int) error {
 			if _, ok := md.messagesById[msg.Id]; !ok {
 				md.messagesById[msg.Id] = msg
 				md.messages[chat.Id] = append(md.messages[chat.Id], msg)
+				if msg.Unread {
+					chat.Unread++
+				}
 			}
 		}
 		chat.Recent = nil
@@ -172,10 +178,18 @@ func (md *MessageDatabase) SetChatUnarchived(chatID string, lastMessage int64) {
 // that turn out to be the same, like the LID and phone number of a contact.
 func (md *MessageDatabase) MergeChat(from, to string) {
 	md.messageLock.Lock()
+	inTo := make(map[string]bool, len(md.messages[to]))
+	for _, msg := range md.messages[to] {
+		inTo[msg.Id] = true
+	}
 	for _, msg := range md.messages[from] {
 		msg.ChatId = to
 		md.messagesById[msg.Id] = msg
-		md.messages[to] = append(md.messages[to], msg)
+		if !inTo[msg.Id] {
+			md.messages[to] = append(md.messages[to], msg)
+		} else {
+			md.replaceMessageLocked(msg)
+		}
 	}
 	delete(md.messages, from)
 	md.messageLock.Unlock()
@@ -184,7 +198,7 @@ func (md *MessageDatabase) MergeChat(from, to string) {
 	defer md.chatLock.Unlock()
 	src, ok := md.chats[from]
 	if !ok {
-		return
+		src = Chat{Id: from, IsGroup: isGroupID(to)} // its messages were moved
 	}
 	dst, ok := md.chats[to]
 	if !ok {
@@ -248,6 +262,13 @@ func (md *MessageDatabase) updateChatLocked(chatID string, update func(chat *Cha
 	md.scheduleSaveLocked()
 }
 
+// scheduleSave saves the chats shortly, see scheduleSaveLocked
+func (md *MessageDatabase) scheduleSave() {
+	md.chatLock.Lock()
+	defer md.chatLock.Unlock()
+	md.scheduleSaveLocked()
+}
+
 // scheduleSaveLocked saves the chats shortly, batching bursts of updates. Requires chatLock.
 func (md *MessageDatabase) scheduleSaveLocked() {
 	if md.chatsPath == "" || md.saveTimer != nil {
@@ -257,6 +278,8 @@ func (md *MessageDatabase) scheduleSaveLocked() {
 }
 
 func (md *MessageDatabase) saveChats() {
+	md.saveLock.Lock()
+	defer md.saveLock.Unlock()
 	md.messageLock.RLock()
 	md.chatLock.Lock()
 	md.saveTimer = nil
@@ -484,7 +507,10 @@ func (md *MessageDatabase) lastIncomingMessageIDsLocked(chatID string, limit int
 	if limit <= 0 {
 		return nil
 	}
-	msgs := md.messages[chatID]
+	// kept in the order they arrived, history sync sends the newest first
+	msgs := make([]Message, len(md.messages[chatID]))
+	copy(msgs, md.messages[chatID])
+	sortMessages(msgs)
 	ids := make([]string, 0, limit)
 	for idx := len(msgs) - 1; idx >= 0 && len(ids) < limit; idx-- {
 		if !msgs[idx].FromMe {
@@ -520,7 +546,7 @@ func (md *MessageDatabase) MarkChatReadUntil(chatID string, until int64) bool {
 		return changed
 	}
 	chat.ReadUntil = max(chat.ReadUntil, until)
-	// the unread count may be of messages that aren't in memory, see UpdateChatUnread
+	// without messages after it, the count of new ones is that of the ones in memory
 	if changed || chat.LastMessage <= until {
 		changed = changed || chat.Unread != unread
 		chat.Unread = unread
@@ -562,6 +588,8 @@ func (md *MessageDatabase) MarkChatRead(chatID string) []Message {
 	if chat, ok := md.chats[chatID]; ok {
 		chat.Unread = 0
 		chat.UnreadReactions = nil
+		// so that the messages don't become new again when they arrive again
+		chat.ReadUntil = max(chat.ReadUntil, chat.LastMessage)
 		md.chats[chatID] = chat
 	}
 	md.scheduleSaveLocked()
@@ -622,10 +650,33 @@ func (md *MessageDatabase) SetReaction(messageID, reactor, reaction string, at i
 	msg = withReaction(msg, reactor, reaction, at)
 	md.messagesById[messageID] = msg
 	md.replaceMessageLocked(msg)
-	md.chatLock.Lock()
-	md.scheduleSaveLocked()
-	md.chatLock.Unlock()
+	md.scheduleSave()
 	return msg.ChatId, true
+}
+
+// UpdateGroupStatuses sets the status of the user's messages in a group from
+// their receipts again, e.g. once its members are known, and returns whether
+// that changed any.
+func (md *MessageDatabase) UpdateGroupStatuses(chatID string, status func(receipts map[string]MessageStatus) MessageStatus) bool {
+	md.messageLock.Lock()
+	defer md.messageLock.Unlock()
+	changed := false
+	msgs := md.messages[chatID]
+	for idx, msg := range msgs {
+		if !msg.FromMe || len(msg.Receipts) == 0 {
+			continue
+		}
+		if updated := status(msg.Receipts); updated > msg.Status {
+			msg.Status = updated
+			msgs[idx] = msg
+			md.messagesById[msg.Id] = msg
+			changed = true
+		}
+	}
+	if changed {
+		md.scheduleSave()
+	}
+	return changed
 }
 
 // SetReceipt records how far a message of the user got for a member of its
@@ -654,9 +705,7 @@ func (md *MessageDatabase) SetReceipt(id, member string, got MessageStatus, stat
 	}
 	md.messagesById[id] = msg
 	md.replaceMessageLocked(msg)
-	md.chatLock.Lock()
-	md.scheduleSaveLocked()
-	md.chatLock.Unlock()
+	md.scheduleSave()
 	return updated, true
 }
 
@@ -735,9 +784,7 @@ func (md *MessageDatabase) UpdateMessageContents(content func(msg Message) (Mess
 			md.replaceMessageLocked(msg)
 		}
 	}
-	md.chatLock.Lock()
-	md.scheduleSaveLocked()
-	md.chatLock.Unlock()
+	md.scheduleSave()
 }
 
 // UpdateContactNames sets the sender id and names of all messages in memory to
@@ -780,9 +827,7 @@ func (md *MessageDatabase) UpdateContactNames(names func(contactID string) (stri
 		md.messages[chatID] = msgs
 	}
 	if changed {
-		md.chatLock.Lock()
-		md.scheduleSaveLocked()
-		md.chatLock.Unlock()
+		md.scheduleSave()
 	}
 }
 
@@ -800,9 +845,7 @@ func (md *MessageDatabase) MarkMessageRevoked(messageID string) bool {
 	msg.Kind = MessageKindUnknown
 	md.messagesById[messageID] = msg
 	md.replaceMessageLocked(msg)
-	md.chatLock.Lock()
-	md.scheduleSaveLocked()
-	md.chatLock.Unlock()
+	md.scheduleSave()
 	return true
 }
 
@@ -936,48 +979,30 @@ func (md *MessageDatabase) GetMessageInfo(id string) string {
 
 // GetIdName resolves a contact or chat ID to a display name.
 func (md *MessageDatabase) GetIdName(id string) string {
-	if id == "" {
-		return "Unknown"
-	}
-
-	md.contactLock.RLock()
-	contact, ok := md.contacts[id]
-	md.contactLock.RUnlock()
-	if ok {
-		if contact.Name != "" {
-			return contact.Name
-		}
-		if contact.Short != "" {
-			return contact.Short
-		}
-	}
-
-	md.chatLock.RLock()
-	chat, ok := md.chats[id]
-	md.chatLock.RUnlock()
-	if ok && chat.Name != "" {
-		return chat.Name
-	}
-
-	return DisplayID(id)
+	return md.idName(id, false)
 }
 
 // GetIdShort resolves a contact or chat ID to a short display name.
 func (md *MessageDatabase) GetIdShort(id string) string {
+	return md.idName(id, true)
+}
+
+// idName returns the name of a contact or chat by ID, the short one if short,
+// or how it is shown without one, see DisplayID
+func (md *MessageDatabase) idName(id string, short bool) string {
 	if id == "" {
-		return "Unknown"
+		return unknownName
 	}
 
 	md.contactLock.RLock()
 	contact, ok := md.contacts[id]
 	md.contactLock.RUnlock()
-	if ok {
-		if contact.Short != "" {
-			return contact.Short
-		}
-		if contact.Name != "" {
-			return contact.Name
-		}
+	names := []string{contact.Name, contact.Short}
+	if short {
+		names = []string{contact.Short, contact.Name}
+	}
+	if name := firstNonEmpty(names...); ok && name != "" {
+		return name
 	}
 
 	md.chatLock.RLock()
@@ -986,6 +1011,5 @@ func (md *MessageDatabase) GetIdShort(id string) string {
 	if ok && chat.Name != "" {
 		return chat.Name
 	}
-
 	return DisplayID(id)
 }

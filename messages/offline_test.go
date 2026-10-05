@@ -23,7 +23,7 @@ func (u *recordingUi) NewScreen([]Message)              {}
 func (u *recordingUi) PrintError(error)                 {}
 func (u *recordingUi) PrintText(string)                 {}
 func (u *recordingUi) SetStatus(SessionStatus)          {}
-func (u *recordingUi) OpenFile(string, string)          {}
+func (u *recordingUi) OpenFile(string)                  {}
 func (u *recordingUi) CloseChat(string)                 {}
 func (u *recordingUi) SetNotice(string, string, string) {}
 func (u *recordingUi) GetWriter() io.Writer             { return io.Discard }

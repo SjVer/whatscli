@@ -41,8 +41,10 @@ var urlPattern = regexp.MustCompile(`https?://[^\s]+`)
 
 // SessionManager deals with the connection and receives commands from the UI.
 type SessionManager struct {
-	db              *MessageDatabase
+	db *MessageDatabase
+	// the open chat, see openChat
 	currentReceiver string
+	receiverLock    sync.RWMutex
 	uiHandler       UiMessageHandler
 	client          *whatsmeow.Client
 	container       *sqlstore.Container
@@ -53,7 +55,6 @@ type SessionManager struct {
 	ContactChannel  chan Contact
 	TextChannel     chan *waProto.Message
 	statusInfo      SessionStatus
-	lastSent        time.Time
 	started         bool
 	eventHandler    *eventHandler
 	// Headless prevents logging in with a QR code, for running without the UI.
@@ -95,8 +96,8 @@ type SessionManager struct {
 	members groupMembers
 	// whether the QR code is shown, and whatscli can be linked, see LinkWithCode
 	linking atomic.Bool
-	// app state collections that were asked from the phone, see recoverAppState
-	recoveryRequested map[appstate.WAPatchName]bool
+	// when app state collections were asked from the phone, see recoverAppState
+	recoveryRequested map[appstate.WAPatchName]time.Time
 	recoveryLock      sync.Mutex
 }
 
@@ -141,6 +142,7 @@ func (sm *SessionManager) StartManager() error {
 		return errors.New("session manager running, send commands to control")
 	}
 	sm.started = true
+	go sm.cleanPreviews()
 	go sm.runManager()
 	return nil
 }
@@ -167,9 +169,7 @@ func (sm *SessionManager) runManager() error {
 		case statusMsg := <-sm.StatusChannel:
 			sm.statusLock.Lock()
 			prevStatus := sm.statusInfo.Connected
-			if statusMsg.err == nil {
-				sm.statusInfo.Connected = statusMsg.connected
-			}
+			sm.statusInfo.Connected = statusMsg.connected
 			if sm.client != nil {
 				sm.statusInfo.Connected = sm.client.IsConnected()
 			} else {
@@ -196,8 +196,23 @@ func (sm *SessionManager) runManager() error {
 	return nil
 }
 
+// openChat returns the ID of the open chat, "" if none is
+func (sm *SessionManager) openChat() string {
+	sm.receiverLock.RLock()
+	defer sm.receiverLock.RUnlock()
+	return sm.currentReceiver
+}
+
+// sendStatus tells the manager loop that the connection changed, without
+// waiting: it reads the state of the connection itself, so one message is enough
+func (sm *SessionManager) sendStatus(connected bool) {
+	signal(sm.StatusChannel, StatusMsg{connected})
+}
+
 func (sm *SessionManager) setCurrentReceiver(id string) {
+	sm.receiverLock.Lock()
 	sm.currentReceiver = id
+	sm.receiverLock.Unlock()
 	sm.uiHandler.NewScreen(sm.getMessages(id))
 	// only the newest messages are saved, load the ones before them from the phone
 	if id != "" {
@@ -301,6 +316,20 @@ func removeDatabase(path string) error {
 	return nil
 }
 
+// closeClient disconnects the client and closes its database, so that a new
+// one can be made, see getConnection: two would both be connected as whatscli.
+func (sm *SessionManager) closeClient() {
+	if sm.client != nil {
+		sm.client.RemoveEventHandlers()
+		sm.client.Disconnect()
+		sm.client = nil
+	}
+	if sm.container != nil {
+		sm.container.Close()
+		sm.container = nil
+	}
+}
+
 // removeCacheStore closes and deletes the cache database.
 func (sm *SessionManager) removeCacheStore() {
 	if sm.cacheContainer != nil {
@@ -313,7 +342,7 @@ func (sm *SessionManager) removeCacheStore() {
 }
 
 func (sm *SessionManager) login() error {
-	sm.client = nil
+	sm.closeClient()
 	client, err := sm.getConnection()
 	if err != nil {
 		return fmt.Errorf("failed to create WhatsApp connection: %v", err)
@@ -325,7 +354,7 @@ func (sm *SessionManager) loginWithConnection(client *whatsmeow.Client) error {
 	sm.uiHandler.SetNotice("", connectionNotice, "Connecting...")
 	if client.IsConnected() {
 		client.Disconnect()
-		sm.StatusChannel <- StatusMsg{false, nil}
+		sm.sendStatus(false)
 		time.Sleep(500 * time.Millisecond)
 	}
 
@@ -345,7 +374,7 @@ func (sm *SessionManager) loginWithConnection(client *whatsmeow.Client) error {
 			if delErr := client.Store.Delete(context.Background()); delErr != nil {
 				return fmt.Errorf("failed to clear expired session: %v", delErr)
 			}
-			sm.client = nil
+			sm.closeClient()
 			client, err = sm.getConnection()
 			if err != nil {
 				return fmt.Errorf("failed to create new connection: %v", err)
@@ -356,7 +385,7 @@ func (sm *SessionManager) loginWithConnection(client *whatsmeow.Client) error {
 	}
 
 	sm.uiHandler.SetNotice("", connectionNotice, "Session restored, connecting...")
-	sm.StatusChannel <- StatusMsg{true, nil}
+	sm.sendStatus(true)
 	go sm.loadRecentChats()
 	return nil
 }
@@ -386,7 +415,7 @@ func (sm *SessionManager) loginWithQRCode(client *whatsmeow.Client) error {
 			if cs := sm.getChatSync(); cs != nil {
 				cs.onLinked()
 			}
-			sm.StatusChannel <- StatusMsg{true, nil}
+			sm.sendStatus(true)
 			go sm.loadRecentChats()
 			return nil
 		default:
@@ -469,21 +498,26 @@ func (sm *SessionManager) printAppStateError(err error, name appstate.WAPatchNam
 // recoverAppState asks the phone for a copy of app state that failed to sync
 // because it doesn't add up, a patch on the server whose hash doesn't match.
 // Syncing again doesn't help then, but the phone's copy replaces it, and later
-// patches work again. It is asked once per session and collection.
+// patches work again. It is asked again when the phone didn't answer within
+// recoveryWait, see recoveryDone.
 func (sm *SessionManager) recoverAppState(err error, name appstate.WAPatchName) bool {
 	if !errors.Is(err, appstate.ErrMismatchingLTHash) && !errors.Is(err, appstate.ErrMismatchingPatchMAC) {
 		return false
 	}
 	sm.recoveryLock.Lock()
 	if sm.recoveryRequested == nil {
-		sm.recoveryRequested = make(map[appstate.WAPatchName]bool)
+		sm.recoveryRequested = make(map[appstate.WAPatchName]time.Time)
 	}
-	requested := sm.recoveryRequested[name]
-	sm.recoveryRequested[name] = true
+	// asked again when the phone didn't answer, e.g. as it was offline
+	requested := time.Since(sm.recoveryRequested[name]) < recoveryWait
+	if !requested {
+		sm.recoveryRequested[name] = time.Now()
+	}
 	sm.recoveryLock.Unlock()
 	if requested {
 		return true
 	}
+	sm.logWarn("The synced %s doesn't add up, asking the phone to repair it: %v", name, err)
 	if _, err := sm.client.SendPeerMessage(context.Background(), whatsmeow.BuildAppStateRecoveryRequest(name)); err != nil {
 		sm.uiHandler.PrintError(fmt.Errorf("failed to ask your phone to repair the chat settings: %v", err))
 		return false
@@ -604,14 +638,14 @@ func (sm *SessionManager) getChatName(jid types.JID) string {
 func (sm *SessionManager) disconnect() error {
 	if sm.client != nil && sm.client.IsConnected() {
 		sm.client.Disconnect()
-		sm.StatusChannel <- StatusMsg{false, nil}
+		sm.sendStatus(false)
 	}
 	return nil
 }
 
 func (sm *SessionManager) logout() error {
 	if sm.client == nil {
-		sm.StatusChannel <- StatusMsg{false, nil}
+		sm.sendStatus(false)
 		sm.uiHandler.PrintText("Already logged out")
 		return nil
 	}
@@ -651,15 +685,20 @@ func (sm *SessionManager) removeSession(unlink bool) error {
 		sm.uiHandler.PrintText("Warning: couldn't remove saved chats: " + err.Error())
 	}
 	sm.resetHistoryRequests()
+	// of the account that was logged out
+	sm.forgetMembers("")
+	sm.pictures.forget()
+	sm.receiverLock.Lock()
 	sm.currentReceiver = ""
+	sm.receiverLock.Unlock()
 	sm.uiHandler.SetChats(sm.db.GetChatIds())
-	sm.StatusChannel <- StatusMsg{false, nil}
+	sm.sendStatus(false)
 	return nil
 }
 func (sm *SessionManager) execCommand(command Command) {
 	switch command.Name {
 	default:
-		sm.uiHandler.PrintText("[" + config.Config.Colors.Negative + "]Unknown command: [-]" + command.Name)
+		sm.uiHandler.PrintText("[" + config.Config.Colors.Negative + "]Unknown command: [-]" + tview.Escape(command.Name))
 	case "backlog":
 		sm.loadBacklog()
 	case "login", "connect":
@@ -696,10 +735,9 @@ func (sm *SessionManager) execCommand(command Command) {
 		}
 	case "read":
 		sm.markCurrentChatRead()
-	case "archive":
-		sm.setCurrentChatArchived(true)
-	case "unarchive":
-		sm.setCurrentChatArchived(false)
+	case "archive", "unarchive":
+		// from the archive key of the chat list
+		sm.setChatArchived(command.Params, command.Name == "archive")
 	case "info":
 		if checkParam(command.Params, 1) {
 			sm.uiHandler.PrintText(sm.db.GetMessageInfo(command.Params[0]) + sm.receiptInfo(command.Params[0]) + sm.reactionInfo(command.Params[0]))
@@ -708,7 +746,7 @@ func (sm *SessionManager) execCommand(command Command) {
 		}
 	case "download":
 		sm.downloadCommand(command.Params, false)
-	case "open", "show":
+	case "open":
 		sm.downloadCommand(command.Params, true)
 	case "url":
 		sm.openMessageURL(command.Params)
@@ -744,19 +782,17 @@ func (sm *SessionManager) execCommand(command Command) {
 			out += "[" + idx + "]" + idx + "[-]\n"
 		}
 		sm.uiHandler.PrintText(out)
-	case "more":
-		sm.loadBacklog()
 	case "relink":
 		sm.relink()
 	}
 }
 
 func (sm *SessionManager) loadBacklog() {
-	if sm.currentReceiver == "" {
+	if sm.openChat() == "" {
 		sm.printCommandUsage("backlog", "-> only works in a chat")
 		return
 	}
-	if err := sm.RequestChatHistory(sm.currentReceiver); err != nil {
+	if err := sm.RequestChatHistory(sm.openChat()); err != nil {
 		sm.uiHandler.PrintError(err)
 	}
 }
@@ -771,11 +807,11 @@ func (sm *SessionManager) resetSession() {
 	sm.uiHandler.PrintText("Session reset. Use /connect to reconnect with a new QR code.")
 }
 func (sm *SessionManager) markCurrentChatRead() {
-	if sm.currentReceiver == "" {
+	if sm.openChat() == "" {
 		sm.printCommandUsage("read", "-> only works in a chat")
 		return
 	}
-	count, err := sm.markChatRead(sm.currentReceiver)
+	count, err := sm.markChatRead(sm.openChat())
 	if err != nil {
 		sm.uiHandler.PrintError(err)
 	} else if count == 0 {
@@ -783,23 +819,23 @@ func (sm *SessionManager) markCurrentChatRead() {
 	}
 }
 
-// setCurrentChatArchived archives or unarchives the open chat, also on the phone.
+// setChatArchived archives or unarchives a chat, also on the phone.
 // Like on the phone, archiving unpins the chat, and it stays archived until a
 // newer message arrives, unless "keep chats archived" is enabled.
-func (sm *SessionManager) setCurrentChatArchived(archive bool) {
+func (sm *SessionManager) setChatArchived(params []string, archive bool) {
 	command, state, done := "unarchive", "not archived", "Unarchived"
 	if archive {
 		command, state, done = "archive", "archived", "Archived"
 	}
-	if sm.currentReceiver == "" {
-		sm.printCommandUsage(command, "-> only works in a chat")
+	if !checkParam(params, 1) {
+		sm.printCommandUsage(command, "[chat-id[], or press "+config.Config.Keymap.ChatArchive+" in the chat list")
 		return
 	}
 	if sm.client == nil || !sm.client.IsConnected() {
 		sm.uiHandler.PrintError(errors.New("not connected to WhatsApp"))
 		return
 	}
-	chatID := sm.currentReceiver
+	chatID := params[0]
 	var chat Chat
 	for _, listed := range sm.db.GetChatIds() {
 		if listed.Id == chatID {
@@ -846,6 +882,18 @@ func (sm *SessionManager) setCurrentChatArchived(archive bool) {
 	sm.uiHandler.PrintText(done + " " + sm.db.GetIdName(chatID))
 	// like on the phone, an archived chat is left
 	sm.uiHandler.CloseChat(chatID)
+}
+
+// recoveryWait is how long the phone is waited for to repair the chat
+// settings before it is asked again, see recoverAppState
+const recoveryWait = 2 * time.Minute
+
+// recoveryDone is called when the phone repaired an app state collection,
+// which can be changed again, see sendAppState
+func (sm *SessionManager) recoveryDone(name appstate.WAPatchName) {
+	sm.recoveryLock.Lock()
+	defer sm.recoveryLock.Unlock()
+	delete(sm.recoveryRequested, name)
 }
 
 // errAppStateRepairing is returned by sendAppState while the phone repairs the chat settings
@@ -929,13 +977,14 @@ func (sm *SessionManager) markChatRead(chatID string) (int, error) {
 	return len(unreadMessages), failed
 }
 
-// downloadCommand downloads the attachment of a message, and opens it with open.
+// downloadCommand downloads the attachment of a message: to the download path,
+// or to open it with its default app, see previewDir.
 func (sm *SessionManager) downloadCommand(params []string, open bool) {
+	name := "download"
+	if open {
+		name = "open"
+	}
 	if !checkParam(params, 1) {
-		name := "download"
-		if open {
-			name = "open"
-		}
 		sm.printCommandUsage(name, "[message-id[]")
 		return
 	}
@@ -951,10 +1000,10 @@ func (sm *SessionManager) downloadCommand(params []string, open bool) {
 		return
 	}
 	if open {
-		sm.uiHandler.OpenFile(path, openCommand(msg.Kind))
+		sm.uiHandler.OpenFile(path)
 		return
 	}
-	sm.uiHandler.PrintText("[::d] -> " + path + "[::-]")
+	sm.uiHandler.PrintText("[::d] -> " + tview.Escape(path) + "[::-]")
 }
 
 func (sm *SessionManager) openMessageURL(params []string) {
@@ -972,27 +1021,11 @@ func (sm *SessionManager) openMessageURL(params []string) {
 		sm.uiHandler.PrintText("No URL found in message")
 		return
 	}
-	sm.uiHandler.OpenFile(url, "")
-}
-
-// openCommand returns the configured command that opens attachments of a kind,
-// or "" for the default app
-func openCommand(kind MessageKind) string {
-	switch kind {
-	case MessageKindImage:
-		return config.Config.General.ImageCommand
-	case MessageKindVideo:
-		return config.Config.General.VideoCommand
-	case MessageKindAudio:
-		return config.Config.General.AudioCommand
-	case MessageKindDocument:
-		return config.Config.General.DocumentCommand
-	}
-	return ""
+	sm.uiHandler.OpenFile(url)
 }
 
 func (sm *SessionManager) sendMediaCommand(params []string, kind MessageKind) {
-	if sm.currentReceiver == "" {
+	if sm.openChat() == "" {
 		sm.printCommandUsage(commandNameForKind(kind), "-> only works in a chat")
 		return
 	}
@@ -1001,7 +1034,7 @@ func (sm *SessionManager) sendMediaCommand(params []string, kind MessageKind) {
 		return
 	}
 	path := strings.Join(params, " ")
-	sm.uiHandler.PrintError(sm.sendMedia(sm.currentReceiver, path, kind))
+	sm.uiHandler.PrintError(sm.sendMedia(sm.openChat(), path, kind))
 }
 
 func (sm *SessionManager) revokeMessage(params []string) {
@@ -1009,14 +1042,15 @@ func (sm *SessionManager) revokeMessage(params []string) {
 		sm.printCommandUsage("revoke", "[message-id[]")
 		return
 	}
-	if sm.client == nil || !sm.client.IsConnected() {
-		sm.uiHandler.PrintError(errors.New("not connected to WhatsApp"))
-		return
-	}
-
 	msg, ok := sm.db.GetMessage(params[0])
 	if !ok {
 		sm.uiHandler.PrintError(errors.New("message not found"))
+		return
+	} else if !msg.FromMe {
+		sm.uiHandler.PrintError(errors.New("only your own messages can be revoked"))
+		return
+	} else if sm.client == nil || !sm.client.IsConnected() {
+		sm.uiHandler.PrintError(errors.New("not connected to WhatsApp"))
 		return
 	}
 	chatJID, err := types.ParseJID(msg.ChatId)
@@ -1246,10 +1280,10 @@ func (sm *SessionManager) updateCurrentGroupSubject(params []string) {
 }
 
 func (sm *SessionManager) currentGroupJID() (types.JID, error) {
-	if sm.currentReceiver == "" || !isGroupID(sm.currentReceiver) {
+	if sm.openChat() == "" || !isGroupID(sm.openChat()) {
 		return types.JID{}, errors.New("not a group")
 	}
-	return types.ParseJID(sm.currentReceiver)
+	return types.ParseJID(sm.openChat())
 }
 
 func (sm *SessionManager) printCommandUsage(command, usage string) {
@@ -1297,7 +1331,6 @@ func (sm *SessionManager) sendText(wid, text, replyID string) {
 			ContextInfo: ctx,
 		}}
 	}
-	sm.lastSent = time.Now()
 	resp, err := sm.client.SendMessage(context.Background(), receiver, raw)
 	if err != nil {
 		sm.uiHandler.PrintError(fmt.Errorf("failed to send message: %v", err))
@@ -1313,7 +1346,7 @@ func (sm *SessionManager) sendText(wid, text, replyID string) {
 // messageSent shows a message that was sent, and marks its chat as read if configured.
 func (sm *SessionManager) messageSent(msg Message) {
 	sm.db.AddMessage(msg, false)
-	if sm.currentReceiver == msg.ChatId {
+	if sm.openChat() == msg.ChatId {
 		sm.uiHandler.NewMessage(msg)
 	}
 	sm.uiHandler.SetChats(sm.db.GetChatIds())
@@ -1394,7 +1427,6 @@ func (sm *SessionManager) sendMedia(chatID, path string, kind MessageKind) error
 		return errors.New("unsupported media type")
 	}
 
-	sm.lastSent = time.Now()
 	resp, err := sm.client.SendMessage(context.Background(), receiver, raw)
 	if err != nil {
 		return fmt.Errorf("failed to send media message: %v", err)
@@ -1409,7 +1441,7 @@ func (sm *SessionManager) sendMedia(chatID, path string, kind MessageKind) error
 func (sm *SessionManager) outgoingMessageFromSendResponse(resp whatsmeow.SendResponse, chatID string, raw *waProto.Message, kind MessageKind, text, mimeType, fileName string) Message {
 	selfID := ""
 	if sm.client != nil && sm.client.Store != nil && sm.client.Store.ID != nil {
-		selfID = sm.client.Store.ID.String()
+		selfID = sm.client.Store.ID.ToNonAD().String() // like the user's messages from other devices
 	}
 
 	contactID := chatID
@@ -1466,6 +1498,7 @@ func (eh *eventHandler) Handle(evt interface{}) {
 		}
 		eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
 		if v.Recovery {
+			eh.sm.recoveryDone(v.Name)
 			eh.sm.uiHandler.SetNotice("", appStateNotice, "Chat settings repaired")
 		}
 		if cs := eh.sm.getChatSync(); cs != nil {
@@ -1479,9 +1512,14 @@ func (eh *eventHandler) Handle(evt interface{}) {
 		}
 		eh.sm.db.SetChatDeleted(eh.sm.chatIdForJID(v.JID), deletedAt)
 		eh.sm.refreshChats(v.FromFullSync)
+	case *events.GroupInfo:
+		// e.g. someone joined or left, see loadedMembers
+		eh.sm.forgetMembers(eh.sm.chatIdForJID(v.JID))
 	case *events.PairSuccess:
 		// pairing sets up the device store, move the cached parts again
-		if err := eh.sm.useCacheStore(eh.sm.client.Store); err != nil {
+		if client := eh.sm.client; client == nil {
+			eh.sm.logWarn("Paired without a client")
+		} else if err := eh.sm.useCacheStore(client.Store); err != nil {
 			eh.sm.uiHandler.PrintError(err)
 		}
 	case *events.MarkChatAsRead:
@@ -1510,22 +1548,22 @@ func (eh *eventHandler) Handle(evt interface{}) {
 		eh.sm.db.SetChatPinned(eh.sm.chatIdForJID(v.JID), v.Action.GetPinned(), v.Timestamp.Unix())
 		eh.sm.refreshChats(v.FromFullSync)
 	case *events.Connected:
-		eh.sm.StatusChannel <- StatusMsg{true, nil}
+		eh.sm.sendStatus(true)
 		eh.sm.connection.connected()
 		// the open chat couldn't be loaded while disconnected
-		if chatID := eh.sm.currentReceiver; chatID != "" {
+		if chatID := eh.sm.openChat(); chatID != "" {
 			go eh.sm.loadChatOnce(chatID)
 		}
 	case *events.Disconnected:
 		eh.sm.finishOfflineSync()
-		eh.sm.StatusChannel <- StatusMsg{false, nil}
+		eh.sm.sendStatus(false)
 		eh.sm.connection.disconnected()
 	case *events.KeepAliveTimeout:
 		eh.sm.connection.unresponsive()
 	case *events.KeepAliveRestored:
 		eh.sm.connection.connected()
 	case *events.LoggedOut:
-		eh.sm.StatusChannel <- StatusMsg{false, nil}
+		eh.sm.sendStatus(false)
 		reason := v.Reason.String()
 		eh.sm.uiHandler.SetNotice("", connectionNotice, "Logged out: "+reason)
 		eh.sm.connection.loggedOut(reason)
@@ -1567,7 +1605,7 @@ func (sm *SessionManager) finishOfflineSync() {
 	}
 	sm.updateActivity()
 	sm.uiHandler.SetChats(sm.db.GetChatIds())
-	sm.showIfOpen(sm.currentReceiver)
+	sm.showIfOpen(sm.openChat())
 }
 
 // handleReceipt marks the messages of a chat as read when they were read on the
@@ -1608,13 +1646,13 @@ func (sm *SessionManager) chatReadElsewhere(chatID string, readUntil, seenUntil 
 // whatscli and its message panel or input have focus, see ChatSeen. Messages
 // that arrive while it isn't stay new when the user looks again.
 func (sm *SessionManager) seesChat(chatID string) bool {
-	return chatID != "" && chatID == sm.currentReceiver && (sm.ChatSeen == nil || sm.ChatSeen())
+	return chatID != "" && chatID == sm.openChat() && (sm.ChatSeen == nil || sm.ChatSeen())
 }
 
 // showIfOpen shows the messages of a chat again if it is open, e.g. when they
 // were read
 func (sm *SessionManager) showIfOpen(chatID string) {
-	if chatID != "" && chatID == sm.currentReceiver {
+	if chatID != "" && chatID == sm.openChat() {
 		sm.uiHandler.NewScreen(sm.getMessages(chatID))
 	}
 }
@@ -1668,7 +1706,7 @@ func (eh *eventHandler) handleLiveMessage(evt *events.Message) {
 		// it may have been read on the phone already
 		markUnread = markUnread && stored.Unread
 	}
-	if msg.ChatId == eh.sm.currentReceiver && show {
+	if msg.ChatId == eh.sm.openChat() && show {
 		if isNew {
 			eh.sm.uiHandler.NewMessage(msg)
 		} else {
@@ -1810,7 +1848,7 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 		eh.sm.refreshContactNames()
 	}
 	eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
-	eh.sm.showIfOpen(eh.sm.currentReceiver)
+	eh.sm.showIfOpen(eh.sm.openChat())
 	if cs := eh.sm.getChatSync(); cs != nil {
 		cs.onHistory(evt.Data, chatIDs, messageCount)
 	}
@@ -2008,7 +2046,7 @@ func (sm *SessionManager) downloadMessage(msg Message, open bool) (string, error
 
 	baseDir := config.Config.General.DownloadPath
 	if open { // to look at, not to keep
-		baseDir = config.Config.General.PreviewPath
+		baseDir = previewDir()
 	}
 	if err = os.MkdirAll(baseDir, 0o755); err != nil {
 		return "", err
@@ -2100,13 +2138,29 @@ func downloadFileName(msg Message) string {
 			return safeName
 		}
 	}
-	ext := ""
-	if msg.MimeType != "" {
-		if exts, err := mime.ExtensionsByType(msg.MimeType); err == nil && len(exts) > 0 {
-			ext = exts[0]
-		}
+	return msg.Id + fileExtension(msg.MimeType)
+}
+
+// commonExtensions are the extensions of files that are better known than the
+// first one the system knows. JPEG stays .jfif on Windows, which opens in the
+// Photos app when .jpg has no default app.
+var commonExtensions = map[string]string{
+	"audio/mpeg": ".mp3",
+	"audio/ogg":  ".ogg",
+	"video/mp4":  ".mp4",
+}
+
+// fileExtension returns the extension of a file of the MIME type, or ""
+func fileExtension(mimeType string) string {
+	mediaType, _, err := mime.ParseMediaType(mimeType)
+	if err != nil {
+		return ""
+	} else if ext, ok := commonExtensions[mediaType]; ok {
+		return ext
+	} else if exts, err := mime.ExtensionsByType(mediaType); err == nil && len(exts) > 0 {
+		return exts[0]
 	}
-	return msg.Id + ext
+	return ""
 }
 
 func uploadMediaType(kind MessageKind) whatsmeow.MediaType {

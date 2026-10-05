@@ -2,8 +2,9 @@ package messages
 
 import (
 	"testing"
+	"time"
 
-	"github.com/normen/whatscli/config"
+	"go.mau.fi/whatsmeow/appstate"
 )
 
 func TestDownloadFileNameSanitizesPathTraversal(t *testing.T) {
@@ -60,14 +61,47 @@ func TestReactionInfoListsWhoReacted(t *testing.T) {
 	}
 }
 
-func TestOpenCommandPerKind(t *testing.T) {
-	general := config.Config.General
-	defer func() { config.Config.General = general }()
-	config.Config.General.ImageCommand = "feh"
-	config.Config.General.VideoCommand = "mpv"
-	for kind, expected := range map[MessageKind]string{MessageKindImage: "feh", MessageKindVideo: "mpv", MessageKindAudio: "", MessageKindText: ""} {
-		if actual := openCommand(kind); actual != expected {
-			t.Errorf("%s: expected %q, got %q", kind, expected, actual)
+func TestFileExtensionsAreTheCommonOnes(t *testing.T) {
+	for mimeType, expected := range map[string]string{"audio/ogg; codecs=opus": ".ogg", "video/mp4": ".mp4", "image/png": ".png", "": ""} {
+		if ext := fileExtension(mimeType); ext != expected {
+			t.Errorf("%q: expected %q, got %q", mimeType, expected, ext)
 		}
+	}
+}
+
+func TestAppStateCanBeChangedOnceItIsRepaired(t *testing.T) {
+	sm := newTestSession(&recordingUi{})
+	sm.recoveryRequested = map[appstate.WAPatchName]time.Time{appstate.WAPatchRegularLow: time.Now()}
+	// while the phone repairs it, changes wait
+	if !sm.recoverAppState(appstate.ErrMismatchingLTHash, appstate.WAPatchRegularLow) {
+		t.Fatal("expected to wait for the repair")
+	}
+	sm.recoveryDone(appstate.WAPatchRegularLow)
+	if _, ok := sm.recoveryRequested[appstate.WAPatchRegularLow]; ok {
+		t.Error("expected the repair to be done")
+	}
+	// a repair the phone didn't answer is asked again
+	sm.recoveryRequested[appstate.WAPatchRegularLow] = time.Now().Add(-2 * recoveryWait)
+	if requested := time.Since(sm.recoveryRequested[appstate.WAPatchRegularLow]) < recoveryWait; requested {
+		t.Error("expected an old request to be asked again")
+	}
+}
+
+// errorUi keeps the printed errors
+type errorUi struct {
+	recordingUi
+	errors []error
+}
+
+func (u *errorUi) PrintError(err error) { u.errors = append(u.errors, err) }
+
+func TestOnlyOwnMessagesCanBeRevoked(t *testing.T) {
+	ui := &errorUi{}
+	sm := newTestSession(&ui.recordingUi)
+	sm.uiHandler = ui
+	sm.db.AddMessage(Message{Id: "theirs", ChatId: "111@s.whatsapp.net", Timestamp: 100}, false)
+	sm.revokeMessage([]string{"theirs"})
+	if len(ui.errors) != 1 || ui.errors[0].Error() != "only your own messages can be revoked" {
+		t.Errorf("expected to be told that it can't be revoked, got %v", ui.errors)
 	}
 }

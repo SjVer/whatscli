@@ -48,7 +48,7 @@ func TestChatPictureFiles(t *testing.T) {
 	if name := pictureFileName("../evil", "1/2"); strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
 		t.Errorf("expected a safe file name, got %q", name)
 	}
-	// without a connection there is no picture, and the app icon is used
+	// without a config there is nowhere to save pictures, so there is none, which is remembered
 	sm := &SessionManager{}
 	if path := sm.chatPicture("123@s.whatsapp.net"); path != "" {
 		t.Errorf("expected no picture, got %q", path)

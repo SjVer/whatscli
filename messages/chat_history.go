@@ -104,11 +104,18 @@ func (sm *SessionManager) requestHistory(chatID string, known Message, count int
 		sm.history.lock.Unlock()
 		return nil // already requested
 	}
-	sm.history.pending[chatID] = time.AfterFunc(historyTimeout, func() {
-		if sm.finishHistoryRequest(chatID) {
+	var timer *time.Timer
+	timer = time.AfterFunc(historyTimeout, func() {
+		sm.history.lock.Lock()
+		current := sm.history.pending[chatID] == timer
+		// loaded again when the chat is opened next time
+		delete(sm.history.loaded, chatID)
+		sm.history.lock.Unlock()
+		if current && sm.finishHistoryRequest(chatID) {
 			sm.uiHandler.SetNotice(chatID, historyNotice, "Your phone didn't send older messages, is it online?")
 		}
 	})
+	sm.history.pending[chatID] = timer
 	sm.history.lock.Unlock()
 	sm.updateActivity()
 	sm.uiHandler.SetNotice(chatID, historyNotice, "")

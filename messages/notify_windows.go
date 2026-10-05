@@ -32,6 +32,14 @@ func registerNotificationApp() {
 		iconPath := filepath.Join(filepath.Dir(configPath), fmt.Sprintf("whatscli-%08x.png", crc32.ChecksumIEEE(NotificationIcon)))
 		if len(NotificationIcon) > 0 && os.WriteFile(iconPath, NotificationIcon, 0644) == nil {
 			notificationIcon = iconPath
+			// of earlier versions of the icon
+			if old, err := filepath.Glob(filepath.Join(filepath.Dir(configPath), "whatscli-*.png")); err == nil {
+				for _, file := range old {
+					if file != iconPath {
+						os.Remove(file)
+					}
+				}
+			}
 		}
 	}
 	key, _, err := registry.CreateKey(registry.CURRENT_USER, `Software\Classes\AppUserModelId\`+notificationAppID, registry.SET_VALUE)

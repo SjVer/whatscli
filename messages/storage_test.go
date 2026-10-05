@@ -325,3 +325,51 @@ func TestReactionTimes(t *testing.T) {
 		t.Fatalf("expected the pending reaction with its time, got %+v", msg)
 	}
 }
+
+func TestUnreadStateAfterLoadingAndMerging(t *testing.T) {
+	db := &MessageDatabase{}
+	db.Init()
+	chat := "111@s.whatsapp.net"
+	// history sync sends the newest first
+	db.AddMessage(Message{Id: "new", ChatId: chat, Timestamp: 300}, false)
+	db.AddMessage(Message{Id: "old", ChatId: chat, Timestamp: 100}, false)
+	db.UpdateChatUnread(chat, 1)
+	if msg, _ := db.GetMessage("new"); !msg.Unread {
+		t.Error("expected the newest message to be the unread one")
+	}
+
+	// saved and loaded again, the count is that of the unread messages
+	path := filepath.Join(t.TempDir(), "chats.json")
+	db.chatsPath, db.savedMessages = path, 50
+	db.saveChats()
+	loaded := &MessageDatabase{}
+	loaded.Init()
+	if err := loaded.LoadChats(path, 50); err != nil {
+		t.Fatal(err)
+	}
+	if chats := loaded.GetChatIds(); chats[0].Unread != 1 {
+		t.Errorf("expected 1 unread message after loading, got %d", chats[0].Unread)
+	}
+
+	// a message in both chats is merged once
+	loaded.AddMessage(Message{Id: "new", ChatId: "222@lid", Timestamp: 300}, false)
+	loaded.MergeChat("222@lid", chat)
+	if msgs := loaded.GetMessages(chat); len(msgs) != 2 {
+		t.Errorf("expected 2 messages after merging, got %d", len(msgs))
+	}
+}
+
+func TestGroupStatusesOnceTheMembersAreKnown(t *testing.T) {
+	db := &MessageDatabase{}
+	db.Init()
+	db.AddMessage(Message{Id: "m1", ChatId: "123-456@g.us", FromMe: true}, false)
+	// before the members are known
+	db.SetReceipt("m1", "alice", StatusRead, func(map[string]MessageStatus) MessageStatus { return StatusDelivered })
+	members := []string{"alice"}
+	if !db.UpdateGroupStatuses("123-456@g.us", func(receipts map[string]MessageStatus) MessageStatus { return groupStatus(receipts, members) }) {
+		t.Fatal("expected the status to change")
+	}
+	if msg, _ := db.GetMessage("m1"); msg.Status != StatusRead {
+		t.Errorf("expected read once the only member is known, got %v", msg.Status)
+	}
+}
