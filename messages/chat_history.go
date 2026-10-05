@@ -80,8 +80,9 @@ func (sm *SessionManager) LoadChat(chatID string) error {
 
 // requestHistory asks the phone for count messages of a chat before a known message.
 func (sm *SessionManager) requestHistory(chatID string, known Message, count int) error {
-	if sm.client == nil || !sm.client.IsConnected() {
-		return errors.New("not connected to WhatsApp")
+	client, err := sm.connectedClient()
+	if err != nil {
+		return err
 	}
 	jid, err := sm.phoneChatJID(chatID)
 	if err != nil {
@@ -108,8 +109,10 @@ func (sm *SessionManager) requestHistory(chatID string, known Message, count int
 	timer = time.AfterFunc(historyTimeout, func() {
 		sm.history.lock.Lock()
 		current := sm.history.pending[chatID] == timer
-		// loaded again when the chat is opened next time
-		delete(sm.history.loaded, chatID)
+		if current {
+			// loaded again when the chat is opened next time
+			delete(sm.history.loaded, chatID)
+		}
 		sm.history.lock.Unlock()
 		if current && sm.finishHistoryRequest(chatID) {
 			sm.uiHandler.SetNotice(chatID, historyNotice, "Your phone didn't send older messages, is it online?")
@@ -121,8 +124,8 @@ func (sm *SessionManager) requestHistory(chatID string, known Message, count int
 	sm.uiHandler.SetNotice(chatID, historyNotice, "")
 
 	sm.logDebug("Requesting %d messages of %s before message %s from %s", count, chatID, anchor.ID, anchor.Timestamp)
-	req := sm.client.BuildHistorySyncRequest(anchor, count)
-	if _, err = sm.client.SendPeerMessage(context.Background(), req); err != nil {
+	req := client.BuildHistorySyncRequest(anchor, count)
+	if _, err = client.SendPeerMessage(context.Background(), req); err != nil {
 		sm.finishHistoryRequest(chatID)
 		return fmt.Errorf("failed to request messages from your phone: %v", err)
 	}
@@ -144,12 +147,13 @@ func (sm *SessionManager) resetHistoryRequests() {
 // phoneChatJID returns the JID the phone knows a chat under: one-to-one chats
 // under their LID, if it is known.
 func (sm *SessionManager) phoneChatJID(chatID string) (types.JID, error) {
+	client := sm.client()
 	jid, err := types.ParseJID(chatID)
 	if err != nil {
 		return jid, fmt.Errorf("invalid chat: %v", err)
 	}
-	if jid.Server == types.DefaultUserServer && sm.client != nil && sm.client.Store.LIDs != nil {
-		if lid, err := sm.client.Store.LIDs.GetLIDForPN(context.Background(), jid); err == nil && !lid.IsEmpty() {
+	if jid.Server == types.DefaultUserServer && client != nil && client.Store.LIDs != nil {
+		if lid, err := client.Store.LIDs.GetLIDForPN(context.Background(), jid); err == nil && !lid.IsEmpty() {
 			return lid, nil
 		}
 	}

@@ -39,8 +39,7 @@ func TestContactDisplayNames(t *testing.T) {
 }
 
 func TestNumbersArentKeptAsChatNames(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 	chat := "31612345678@s.whatsapp.net"
 	db.AddMessage(Message{Id: "m1", ChatId: chat, ContactName: "31612345678", Timestamp: 100}, false)
 	if chats := db.GetChatIds(); chats[0].Name != "" {
@@ -67,8 +66,7 @@ func TestSavedNumbersAreDroppedAsChatNames(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "chats.json")
 	os.WriteFile(path, []byte(`[{"Id":"31612345678@s.whatsapp.net","Name":"31612345678","LastMessage":100,
 		"Recent":[{"Id":"m1","ChatId":"31612345678@s.whatsapp.net","FromMe":true,"Timestamp":100}]}]`), 0600)
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 	if err := db.LoadChats(path, 50); err != nil {
 		t.Fatal(err)
 	}

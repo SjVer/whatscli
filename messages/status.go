@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/rivo/tview"
 	"go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -134,5 +135,5 @@ func (sm *SessionManager) receiptInfo(messageID string) string {
 	if len(delivered) > 0 {
 		out += "\nDelivered to: " + strings.Join(delivered, ", ")
 	}
-	return out
+	return tview.Escape(out)
 }

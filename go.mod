@@ -17,7 +17,6 @@ require (
 	github.com/rs/zerolog v1.35.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
-	github.com/zyedidia/clipboard v1.0.3
 	go.mau.fi/whatsmeow v0.0.0-20260730092514-662ad1dc6900
 	golang.design/x/clipboard v0.11.0
 	golang.org/x/image v0.28.0

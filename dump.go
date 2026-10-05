@@ -30,7 +30,7 @@ func openLog(path string) (waLog.Logger, error) {
 type consoleHandler struct{}
 
 func (c consoleHandler) NewMessage(msg messages.Message)         {}
-func (c consoleHandler) NewScreen(msgs []messages.Message)       {}
+func (c consoleHandler) NewScreen(string, []messages.Message)    {}
 func (c consoleHandler) SetChats(chats []messages.Chat)          {}
 func (c consoleHandler) SetStatus(status messages.SessionStatus) {}
 func (c consoleHandler) OpenFile(target string)                  {}

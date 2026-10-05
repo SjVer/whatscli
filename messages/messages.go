@@ -8,10 +8,10 @@ import (
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 )
 
-// TODO: move these funcs/interface to channels
 type UiMessageHandler interface {
 	NewMessage(Message)
-	NewScreen([]Message)
+	// NewScreen shows the messages of a chat again, if it is open
+	NewScreen(chatID string, msgs []Message)
 	SetChats([]Chat)
 	PrintError(error)
 	PrintText(string)
@@ -32,11 +32,6 @@ type SessionStatus struct {
 	Connected bool
 	// what whatscli is waiting for, e.g. messages from the phone
 	Activity string
-}
-
-// StatusMsg tells the manager loop that the connection changed, see sendStatus
-type StatusMsg struct {
-	connected bool
 }
 
 // message object for commands

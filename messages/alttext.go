@@ -27,10 +27,6 @@ const altTextNotice = "alttext"
 // altTextPrompt asks the model for the alt text
 const altTextPrompt = "Describe this image for someone who can't see it, in at most 10 words, without a preamble."
 
-// errNotConnected is returned when media can't be downloaded while not
-// connected, which is tried again later, unlike other failures
-var errNotConnected = errors.New("not connected to WhatsApp")
-
 // altTexts are the messages that wait for a description
 type altTexts struct {
 	lock    sync.Mutex
@@ -108,9 +104,9 @@ func (sm *SessionManager) describeMessage(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	client := sm.client
-	if client == nil || !client.IsConnected() {
-		return "", errNotConnected
+	client, err := sm.connectedClient()
+	if err != nil {
+		return "", err
 	}
 	downloadable, err := downloadableFromMessage(msg)
 	if err != nil {

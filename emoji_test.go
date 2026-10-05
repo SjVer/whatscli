@@ -10,6 +10,7 @@ import (
 )
 
 func TestEmojiQueryAt(t *testing.T) {
+	withUI(t)
 	tests := []struct {
 		text  string
 		query string
@@ -39,6 +40,7 @@ func TestEmojiQueryAt(t *testing.T) {
 }
 
 func TestMatchEmoji(t *testing.T) {
+	withUI(t)
 	recentEmoji = nil
 	matches := matchEmoji("sob", 8)
 	if len(matches) == 0 || matches[0].name != "sob" || matches[0].emoji != "😭" {
@@ -66,6 +68,7 @@ func TestMatchEmoji(t *testing.T) {
 }
 
 func TestReplaceShortcodes(t *testing.T) {
+	withUI(t)
 	recentEmoji = nil
 	tests := map[string]string{
 		":sob:":                    "😭",
@@ -90,6 +93,7 @@ func TestReplaceShortcodes(t *testing.T) {
 
 // typeText types text into the input, one key at a time
 func TestEmojiAutocomplete(t *testing.T) {
+	withUI(t)
 	recentEmoji = nil
 	textInput = newTextInput()
 
@@ -148,6 +152,7 @@ func TestEmojiAutocomplete(t *testing.T) {
 }
 
 func TestEmojiPopupIsDrawnAboveTheInput(t *testing.T) {
+	withUI(t)
 	recentEmoji = nil
 	screen := newScreen(t, 40, 16)
 	textInput = newTextInput()
@@ -177,6 +182,7 @@ func TestEmojiPopupIsDrawnAboveTheInput(t *testing.T) {
 }
 
 func TestEmojiAreColored(t *testing.T) {
+	withUI(t)
 	for _, code := range emojiCodes {
 		if runes := []rune(code.emoji); len(runes) == 1 && runes[0] < 0x1F300 {
 			t.Fatalf("%s (%s) is shown in black and white without a variation selector", code.emoji, code.name)
@@ -188,6 +194,7 @@ func TestEmojiAreColored(t *testing.T) {
 }
 
 func TestEmojiShortcodesCanBeDisabled(t *testing.T) {
+	withUI(t)
 	config.Config.General.EmojiShortcodes = false
 	defer func() { config.Config.General.EmojiShortcodes = true }()
 

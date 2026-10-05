@@ -10,6 +10,7 @@ import (
 )
 
 func TestMentionQueryAt(t *testing.T) {
+	withUI(t)
 	cases := []struct {
 		text  string
 		query string
@@ -30,6 +31,7 @@ func TestMentionQueryAt(t *testing.T) {
 }
 
 func TestMatchMembers(t *testing.T) {
+	withUI(t)
 	members := []messages.Member{{Id: "1@lid", Name: "Alice Smith"}, {Id: "2@lid", Name: "Bob"}, {Id: "3@lid", Name: "Carol Lee"}}
 	matches := matchMembers(members, "l", 8)
 	// names with a word starting with l first
@@ -42,6 +44,7 @@ func TestMatchMembers(t *testing.T) {
 }
 
 func TestMentionsAreHighlightedInTheInput(t *testing.T) {
+	withUI(t)
 	defer func(members func() []messages.Member, input *tview.TextArea) {
 		groupMembers, textInput = members, input
 	}(groupMembers, textInput)

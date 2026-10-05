@@ -10,6 +10,7 @@ import (
 )
 
 func TestNoticesAreShownDimBelowTheirChat(t *testing.T) {
+	withUI(t)
 	notices = map[string][]notice{}
 	textView = tview.NewTextView().SetDynamicColors(true).SetRegions(true)
 	messageSearch = ""

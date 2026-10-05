@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
@@ -52,7 +54,7 @@ func (sm *SessionManager) loadedMembers(chatID string) ([]Member, []string) {
 		return members, sm.members.receivers[chatID]
 	}
 	// the client can be replaced meanwhile, e.g. by /relink
-	if client := sm.client; !sm.members.loading[chatID] && client != nil && client.IsConnected() {
+	if client := sm.client(); !sm.members.loading[chatID] && client != nil && client.IsConnected() {
 		if sm.members.loading == nil {
 			sm.members.loading = make(map[string]bool)
 		}
@@ -145,14 +147,38 @@ func resolveMentions(text string, members []Member) (string, []string, []string)
 	var mentioned, typed []string
 	for _, member := range sorted {
 		jid, err := types.ParseJID(member.Id)
-		if err != nil || !strings.Contains(text, "@"+member.Name) {
+		if err != nil {
 			continue
 		}
-		text = strings.ReplaceAll(text, "@"+member.Name, "@"+jid.User)
+		replaced := replaceMention(text, "@"+member.Name, "@"+jid.User)
+		if replaced == text {
+			continue
+		}
+		text = replaced
 		mentioned = append(mentioned, member.Id)
 		typed = append(typed, "@"+member.Name)
 	}
 	return text, mentioned, typed
+}
+
+// replaceMention replaces a mention in text where it is a whole word, so that
+// @Ann isn't taken for the start of @Annabel
+func replaceMention(text, mention, replacement string) string {
+	var out strings.Builder
+	for {
+		idx := strings.Index(text, mention)
+		if idx < 0 {
+			return out.String() + text
+		}
+		next, _ := utf8.DecodeRuneInString(text[idx+len(mention):])
+		out.WriteString(text[:idx])
+		if unicode.IsLetter(next) || unicode.IsDigit(next) {
+			out.WriteString(mention) // a longer name or number
+		} else {
+			out.WriteString(replacement)
+		}
+		text = text[idx+len(mention):]
+	}
 }
 
 // showMentions replaces the numbers of the mentioned people in the text of a
@@ -172,7 +198,7 @@ func (sm *SessionManager) showMentions(text string, mentioned []string) (string,
 		}
 		mention := "@" + jid.User
 		if ok {
-			text = strings.ReplaceAll(text, mention, "@"+name)
+			text = replaceMention(text, mention, "@"+name)
 			mention = "@" + name
 		}
 		if strings.Contains(text, mention) {
@@ -185,7 +211,7 @@ func (sm *SessionManager) showMentions(text string, mentioned []string) (string,
 // ownName returns the profile name of the user, which mentions of them show
 // like on the phone, or "You" when it isn't known
 func (sm *SessionManager) ownName() string {
-	if client := sm.client; client != nil && client.Store.PushName != "" {
+	if client := sm.client(); client != nil && client.Store.PushName != "" {
 		return client.Store.PushName
 	}
 	return "You"
@@ -193,9 +219,10 @@ func (sm *SessionManager) ownName() string {
 
 // isOwnUser returns whether jid is the user, by number or LID
 func (sm *SessionManager) isOwnUser(jid types.JID) bool {
-	if sm.client == nil || sm.client.Store.ID == nil {
+	client := sm.client()
+	if client == nil || client.Store.ID == nil {
 		return false
 	}
-	lid := sm.client.Store.GetLID()
-	return jid.User == sm.client.Store.ID.User || !lid.IsEmpty() && jid.User == lid.User
+	lid := client.Store.GetLID()
+	return jid.User == client.Store.ID.User || !lid.IsEmpty() && jid.User == lid.User
 }

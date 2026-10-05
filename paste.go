@@ -33,6 +33,24 @@ const imageNotice = "image"
 // clipboardReady is whether the clipboard can be read, see readClipboardImage
 var clipboardReady = clipboard.Init() == nil
 
+// readClipboard returns the text on the clipboard
+func readClipboard() (string, error) {
+	if !clipboardReady {
+		return "", errors.New("the clipboard can't be read")
+	}
+	data, err := clipboard.Read(context.Background(), clipboard.FmtText)
+	return string(data), err
+}
+
+// writeClipboard puts text on the clipboard
+func writeClipboard(text string) error {
+	if !clipboardReady {
+		return errors.New("the clipboard can't be written")
+	}
+	_, err := clipboard.Write(context.Background(), clipboard.FmtText, []byte(text))
+	return err
+}
+
 // readClipboardImage returns the image on the clipboard, or an image file that
 // was copied, e.g. in the file manager, or nil if there is none
 func readClipboardImage() ([]byte, error) {

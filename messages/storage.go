@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rivo/tview"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"google.golang.org/protobuf/proto"
 )
@@ -48,6 +49,9 @@ func (md *MessageDatabase) Init() {
 
 // Reset removes all messages, chats and contacts, including the saved chats.
 func (md *MessageDatabase) Reset() error {
+	// not while the chats of the account are being saved
+	md.saveLock.Lock()
+	defer md.saveLock.Unlock()
 	md.messageLock.Lock()
 	md.messages = make(map[string][]Message)
 	md.messagesById = make(map[string]Message)
@@ -993,7 +997,8 @@ func (md *MessageDatabase) GetMessageInfo(id string) string {
 	if msg.MimeType != "" {
 		info += "\nMIME: " + msg.MimeType
 	}
-	return info
+	// names and file names can have brackets, which aren't tags
+	return tview.Escape(info)
 }
 
 // GetIdName resolves a contact or chat ID to a display name.

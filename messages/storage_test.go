@@ -9,8 +9,7 @@ import (
 )
 
 func TestAddMessageAndMarkChatRead(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 
 	first := Message{
 		Id:           "msg-1",
@@ -68,8 +67,7 @@ func TestAddMessageAndMarkChatRead(t *testing.T) {
 }
 
 func TestUpdateChatUnreadMarksLatestIncomingMessages(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 
 	for idx := 0; idx < 4; idx++ {
 		db.AddMessage(Message{
@@ -101,8 +99,7 @@ func TestUpdateChatUnreadMarksLatestIncomingMessages(t *testing.T) {
 }
 
 func TestGetChatIdsArchivedHiddenAndOrder(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 
 	db.AddChat(Chat{Id: "contact@s.whatsapp.net", Name: "Contact without chat"})
 	db.UpdateChatLastMessage("pinned@s.whatsapp.net", 50)
@@ -168,8 +165,7 @@ func TestGetChatIdsArchivedHiddenAndOrder(t *testing.T) {
 }
 
 func TestSetChatUnarchivedOverridesOlderArchiveRecords(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 
 	// the phone lists the chat as not archived, for a message whatscli couldn't parse
 	db.SetChatArchived("bob@s.whatsapp.net", true, 100)
@@ -186,8 +182,7 @@ func TestSetChatUnarchivedOverridesOlderArchiveRecords(t *testing.T) {
 }
 
 func TestMergeChatMovesLIDChatToPhoneNumber(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 
 	db.AddChat(Chat{Id: "123@s.whatsapp.net", Name: "Alice"})
 	db.AddMessage(Message{Id: "m1", ChatId: "456@lid", Timestamp: 300}, false)
@@ -214,8 +209,7 @@ func TestMergeChatMovesLIDChatToPhoneNumber(t *testing.T) {
 
 func TestNewestMessagesAreSavedAndLoaded(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "chats.json")
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 	if err := db.LoadChats(path, 2); err != nil {
 		t.Fatal(err)
 	}
@@ -225,8 +219,7 @@ func TestNewestMessagesAreSavedAndLoaded(t *testing.T) {
 		RawMessage: &waProto.Message{Conversation: proto.String("new")}}, false)
 	db.saveChats()
 
-	loaded := &MessageDatabase{}
-	loaded.Init()
+	loaded := newTestDB()
 	if err := loaded.LoadChats(path, 2); err != nil {
 		t.Fatal(err)
 	}
@@ -244,8 +237,7 @@ func TestNewestMessagesAreSavedAndLoaded(t *testing.T) {
 
 func TestSetReaction(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "chats.json")
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 	if err := db.LoadChats(path, 10); err != nil {
 		t.Fatal(err)
 	}
@@ -262,8 +254,7 @@ func TestSetReaction(t *testing.T) {
 	db.SetReaction("m1", "456@s.whatsapp.net", "", 150) // removes it
 	db.saveChats()
 
-	loaded := &MessageDatabase{}
-	loaded.Init()
+	loaded := newTestDB()
 	if err := loaded.LoadChats(path, 10); err != nil {
 		t.Fatal(err)
 	}
@@ -273,8 +264,7 @@ func TestSetReaction(t *testing.T) {
 }
 
 func TestReactionToMessageLoadedLater(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 	if _, ok := db.SetReaction("old", "456@s.whatsapp.net", "👍", 150); ok {
 		t.Fatal("expected the message not to be loaded yet")
 	}
@@ -285,8 +275,7 @@ func TestReactionToMessageLoadedLater(t *testing.T) {
 }
 
 func TestUpdateContactNamesLooksUpEachSenderOnce(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 	db.AddMessage(Message{Id: "m1", ChatId: "group@g.us", ContactId: "456@lid", Timestamp: 100}, false)
 	db.AddMessage(Message{Id: "m2", ChatId: "group@g.us", ContactId: "456@lid", Timestamp: 200}, false)
 
@@ -306,8 +295,7 @@ func TestUpdateContactNamesLooksUpEachSenderOnce(t *testing.T) {
 }
 
 func TestReactionTimes(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 	db.AddMessage(Message{Id: "m1", ChatId: "123@s.whatsapp.net", Timestamp: 100}, false)
 	db.SetReaction("m1", "456@s.whatsapp.net", "👍", 200)
 	if msg, _ := db.GetMessage("m1"); msg.ReactionTimes["456@s.whatsapp.net"] != 200 {
@@ -327,8 +315,7 @@ func TestReactionTimes(t *testing.T) {
 }
 
 func TestUnreadStateAfterLoadingAndMerging(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 	chat := "111@s.whatsapp.net"
 	// history sync sends the newest first
 	db.AddMessage(Message{Id: "new", ChatId: chat, Timestamp: 300}, false)
@@ -342,8 +329,7 @@ func TestUnreadStateAfterLoadingAndMerging(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "chats.json")
 	db.chatsPath, db.savedMessages = path, 50
 	db.saveChats()
-	loaded := &MessageDatabase{}
-	loaded.Init()
+	loaded := newTestDB()
 	if err := loaded.LoadChats(path, 50); err != nil {
 		t.Fatal(err)
 	}
@@ -360,8 +346,7 @@ func TestUnreadStateAfterLoadingAndMerging(t *testing.T) {
 }
 
 func TestGroupStatusesOnceTheMembersAreKnown(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 	db.AddMessage(Message{Id: "m1", ChatId: "123-456@g.us", FromMe: true}, false)
 	// before the members are known
 	db.SetReceipt("m1", "alice", StatusRead, func(map[string]MessageStatus) MessageStatus { return StatusDelivered })

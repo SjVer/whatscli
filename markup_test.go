@@ -7,6 +7,7 @@ import (
 )
 
 func TestFormatMarkup(t *testing.T) {
+	withUI(t)
 	tests := []struct {
 		text     string
 		expected string
@@ -38,12 +39,14 @@ func TestFormatMarkup(t *testing.T) {
 }
 
 func TestFormatMarkupHighlightsSearch(t *testing.T) {
+	withUI(t)
 	if actual := formatMarkup("*big cat*", "cat", nil); actual != "[::b]big [black:yellow]cat[-:-][::-]" {
 		t.Fatalf("unexpected result %q", actual)
 	}
 }
 
 func TestMentionsAreHighlighted(t *testing.T) {
+	withUI(t)
 	color := config.Config.Colors.Mention
 	actual := formatMarkup("hi @Ann Lee and *@Bob*", "", []string{"@Ann", "@Ann Lee", "@Bob"})
 	expected := "hi [" + color + "]@Ann Lee[-] and [::b][" + color + "]@Bob[-][::-]"

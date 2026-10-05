@@ -9,6 +9,7 @@ import (
 )
 
 func TestTicksAreAtTheRight(t *testing.T) {
+	withUI(t)
 	const width = 30
 	view := tview.NewTextView().SetDynamicColors(true).SetRegions(true).SetWordWrap(true)
 	view.SetRect(0, 0, width, 10)
@@ -44,6 +45,7 @@ func TestTicksAreAtTheRight(t *testing.T) {
 }
 
 func TestTicksOfShortAndFormattedMessages(t *testing.T) {
+	withUI(t)
 	ticks := statusTicks(messages.StatusSent)
 	if text := withTicks("", ticks, 30); tview.TaggedStringWidth(text) != 30 {
 		t.Errorf("expected an empty text to get the ticks at the right, got %q", text)

@@ -64,8 +64,7 @@ func TestGroupMessagesAreReadWhenAllMembersReadThem(t *testing.T) {
 }
 
 func TestStatusOnlyGoesUp(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 	chat := "111@s.whatsapp.net"
 	db.AddMessage(Message{Id: "m1", ChatId: chat, FromMe: true}, false)
 	if msg, _ := db.GetMessage("m1"); msg.Status != StatusSent {

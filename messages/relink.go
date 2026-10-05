@@ -41,6 +41,15 @@ func (sm *SessionManager) relink() {
 		return
 	}
 
+	// an earlier /relink that didn't finish doesn't report on this one
+	if old := sm.getChatSync(); old != nil {
+		old.lock.Lock()
+		old.finished = true
+		if old.idleTimer != nil {
+			old.idleTimer.Stop()
+		}
+		old.lock.Unlock()
+	}
 	sm.setChatSync(&chatSync{
 		sm:           sm,
 		start:        time.Now(),

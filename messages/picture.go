@@ -75,14 +75,16 @@ func (sm *SessionManager) downloadChatPicture(chatID string) (string, bool) {
 	configPath := config.GetConfigFilePath()
 	if configPath == "" {
 		return "", true
-	} else if sm.client == nil || !sm.client.IsConnected() {
+	}
+	client, err := sm.connectedClient()
+	if err != nil {
 		return "", false
 	}
 	jid, err := types.ParseJID(chatID)
 	if err != nil {
 		return "", true
 	}
-	info, err := sm.client.GetProfilePictureInfo(context.Background(), jid, &whatsmeow.GetProfilePictureParams{Preview: true})
+	info, err := client.GetProfilePictureInfo(context.Background(), jid, &whatsmeow.GetProfilePictureParams{Preview: true})
 	if errors.Is(err, whatsmeow.ErrProfilePictureNotSet) || errors.Is(err, whatsmeow.ErrProfilePictureUnauthorized) {
 		return "", true // none, or hidden
 	} else if err != nil {
@@ -96,8 +98,8 @@ func (sm *SessionManager) downloadChatPicture(chatID string) (string, bool) {
 		return path, true
 	}
 
-	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(info.URL)
+	httpClient := http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Get(info.URL)
 	if err != nil {
 		return "", false
 	}

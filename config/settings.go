@@ -154,7 +154,7 @@ var Config = IniFile{
 func InitConfig() {
 	var err error
 	if configFilePath, err = xdg.ConfigFile("whatscli/whatscli.config"); err == nil {
-		// add any new values
+		// an existing config is read, new settings aren't added to it
 		var cfg *ini.File
 		if cfg, err = ini.Load(configFilePath); err == nil {
 			cfg.NameMapper = ini.TitleUnderscore

@@ -87,18 +87,9 @@ func TestAppStateCanBeChangedOnceItIsRepaired(t *testing.T) {
 	}
 }
 
-// errorUi keeps the printed errors
-type errorUi struct {
-	recordingUi
-	errors []error
-}
-
-func (u *errorUi) PrintError(err error) { u.errors = append(u.errors, err) }
-
 func TestOnlyOwnMessagesCanBeRevoked(t *testing.T) {
-	ui := &errorUi{}
-	sm := newTestSession(&ui.recordingUi)
-	sm.uiHandler = ui
+	ui := &recordingUi{}
+	sm := newTestSession(ui)
 	sm.db.AddMessage(Message{Id: "theirs", ChatId: "111@s.whatsapp.net", Timestamp: 100}, false)
 	sm.revokeMessage([]string{"theirs"})
 	if len(ui.errors) != 1 || ui.errors[0].Error() != "only your own messages can be revoked" {

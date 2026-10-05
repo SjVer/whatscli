@@ -14,6 +14,7 @@ import (
 )
 
 func TestContinuesGroup(t *testing.T) {
+	withUI(t)
 	first := messages.Message{Id: "1", ContactId: "alice", ContactShort: "Alice", Timestamp: 1000}
 	tests := []struct {
 		name     string
@@ -36,6 +37,7 @@ func TestContinuesGroup(t *testing.T) {
 }
 
 func TestGroupedMessagesAreShownBelowOneHeader(t *testing.T) {
+	withUI(t)
 	first := messages.Message{Id: "1", ContactId: "alice", ContactShort: "Alice", Timestamp: 1000, Text: "hello"}
 	next := messages.Message{Id: "2", ContactId: "alice", ContactShort: "Alice", Timestamp: 1060, Text: "again"}
 
@@ -56,6 +58,7 @@ func TestGroupedMessagesAreShownBelowOneHeader(t *testing.T) {
 }
 
 func TestFormatMessageTime(t *testing.T) {
+	withUI(t)
 	now := time.Date(2026, 9, 24, 16, 30, 0, 0, time.Local)
 	tests := []struct {
 		sent     time.Time
@@ -75,6 +78,7 @@ func TestFormatMessageTime(t *testing.T) {
 }
 
 func TestSearchMatching(t *testing.T) {
+	withUI(t)
 	chat := messages.Chat{Id: "31612345678@s.whatsapp.net", Name: "Carol :)"}
 	for search, expected := range map[string]bool{"carol": true, "CAROL": true, "3161234": true, "bob": false} {
 		if chatMatches(chat, search) != expected {
@@ -88,6 +92,7 @@ func TestSearchMatching(t *testing.T) {
 }
 
 func TestHighlightSearch(t *testing.T) {
+	withUI(t)
 	if actual := highlightSearch("a Cat and a cat [x]", "cat"); actual != "a [black:yellow]Cat[-:-] and a [black:yellow]cat[-:-] [x[]" {
 		t.Fatalf("unexpected highlight %q", actual)
 	}
@@ -97,6 +102,7 @@ func TestHighlightSearch(t *testing.T) {
 }
 
 func TestReactionSummary(t *testing.T) {
+	withUI(t)
 	summary := reactionSummary(map[string]string{"a": "👍", "b": "❤️", "c": "👍", "me": "😭"})
 	if summary != "👍2 ❤️ 😭" {
 		t.Fatalf("unexpected summary %q", summary)
@@ -113,6 +119,7 @@ func TestReactionSummary(t *testing.T) {
 }
 
 func TestSwitchDraft(t *testing.T) {
+	withUI(t)
 	drafts = map[string]string{}
 	if text := switchDraft("", "alice", "/search bob"); text != "" {
 		t.Fatalf("expected no draft for a chat that wasn't typed in, got %q", text)
@@ -137,6 +144,7 @@ func TestSwitchDraft(t *testing.T) {
 }
 
 func TestChatNodeTextMarksDrafts(t *testing.T) {
+	withUI(t)
 	drafts = map[string]string{"alice": "half a message"}
 	if text := chatNodeText(messages.Chat{Id: "alice", Name: "Alice"}); text != "Alice ✎" {
 		t.Fatalf("expected a draft marker, got %q", text)
@@ -147,6 +155,7 @@ func TestChatNodeTextMarksDrafts(t *testing.T) {
 }
 
 func TestShiftEnterStartsANewLine(t *testing.T) {
+	withUI(t)
 	textInput = newTextInput()
 	setInput("one")
 	typeKeys(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModShift), tcell.NewEventKey(tcell.KeyRune, 't', tcell.ModNone))
@@ -156,6 +165,7 @@ func TestShiftEnterStartsANewLine(t *testing.T) {
 }
 
 func TestWrappedLineCount(t *testing.T) {
+	withUI(t)
 	tests := []struct {
 		text     string
 		width    int
@@ -192,6 +202,7 @@ func typeKeys(keys ...*tcell.EventKey) {
 }
 
 func TestWordDeletingKeys(t *testing.T) {
+	withUI(t)
 	textInput = newTextInput()
 	left := tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone)
 
@@ -217,6 +228,7 @@ func TestWordDeletingKeys(t *testing.T) {
 }
 
 func TestNextWordStart(t *testing.T) {
+	withUI(t)
 	text := "one two  three 😭 end"
 	for pos, expected := range map[int]int{0: 4, 1: 4, 3: 4, 4: 9, 7: 9, 9: 15, 15: 20, 20: len(text)} {
 		if actual := nextWordStart(text, pos); actual != expected {
@@ -226,6 +238,7 @@ func TestNextWordStart(t *testing.T) {
 }
 
 func TestCtrlArrowsMoveByWords(t *testing.T) {
+	withUI(t)
 	textInput = newTextInput()
 	setInput("one two three")
 	typeKeys(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone))
@@ -249,6 +262,7 @@ func TestCtrlArrowsMoveByWords(t *testing.T) {
 }
 
 func TestSyncText(t *testing.T) {
+	withUI(t)
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.Local)
 	if text := syncText(true, time.Time{}, now); text != "" {
 		t.Errorf("expected nothing before anything was received, got %q", text)
@@ -279,6 +293,7 @@ func TestSyncText(t *testing.T) {
 }
 
 func TestCommandsAreColored(t *testing.T) {
+	withUI(t)
 	textInput = newTextInput()
 	color := func() tcell.Color {
 		fg, _, _ := textInput.GetTextStyle().Decompose()
@@ -311,6 +326,7 @@ func TestCommandsAreColored(t *testing.T) {
 }
 
 func TestReactionLinesInTheChat(t *testing.T) {
+	withUI(t)
 	defer func(names func(string) string) { reactorName = names }(reactorName)
 	reactorName = func(reactor string) string { return map[string]string{"bob": "Bob", "me": "You"}[reactor] }
 	messageSearch = ""
@@ -346,6 +362,7 @@ func TestReactionLinesInTheChat(t *testing.T) {
 }
 
 func TestNotificationIconIsAPNG(t *testing.T) {
+	withUI(t)
 	icon, err := png.Decode(bytes.NewReader(notificationIcon))
 	if err != nil {
 		t.Fatal(err)
@@ -356,6 +373,7 @@ func TestNotificationIconIsAPNG(t *testing.T) {
 }
 
 func TestWindowTitleCountsNewMessagesAndReactions(t *testing.T) {
+	withUI(t)
 	chats := []messages.Chat{
 		{Id: "alice", Unread: 2, UnreadReactions: []int64{100}},
 		{Id: "bob", UnreadReactions: []int64{100, 200}},
@@ -374,6 +392,7 @@ func TestWindowTitleCountsNewMessagesAndReactions(t *testing.T) {
 }
 
 func TestMovingThroughMessagesStopsAtTheEnds(t *testing.T) {
+	withUI(t)
 	curRegions = []messages.Message{{Id: "1"}, {Id: "2"}, {Id: "3"}}
 	defer func() { curRegions = nil }()
 	for _, test := range []struct {

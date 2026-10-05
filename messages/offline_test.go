@@ -1,63 +1,14 @@
 package messages
 
 import (
-	"io"
 	"testing"
 	"time"
 
-	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
 )
-
-// recordingUi counts how often the chat list is shown, and keeps the last one
-type recordingUi struct {
-	chatLists int
-	chats     []Chat
-}
-
-func (u *recordingUi) NewMessage(Message)               {}
-func (u *recordingUi) NewScreen([]Message)              {}
-func (u *recordingUi) PrintError(error)                 {}
-func (u *recordingUi) PrintText(string)                 {}
-func (u *recordingUi) SetStatus(SessionStatus)          {}
-func (u *recordingUi) OpenFile(string)                  {}
-func (u *recordingUi) CloseChat(string)                 {}
-func (u *recordingUi) SetNotice(string, string, string) {}
-func (u *recordingUi) GetWriter() io.Writer             { return io.Discard }
-func (u *recordingUi) SetChats(chats []Chat) {
-	u.chatLists++
-	u.chats = chats
-}
-
-func (u *recordingUi) unread(chatID string) int {
-	for _, chat := range u.chats {
-		if chat.Id == chatID {
-			return chat.Unread
-		}
-	}
-	return -1
-}
-
-func newTestSession(ui *recordingUi) *SessionManager {
-	sm := &SessionManager{uiHandler: ui, db: &MessageDatabase{}}
-	sm.db.Init()
-	sm.eventHandler = &eventHandler{sm: sm}
-	return sm
-}
-
-func incomingMessage(id string, chat types.JID, at time.Time) *events.Message {
-	return &events.Message{
-		Info: types.MessageInfo{
-			MessageSource: types.MessageSource{Chat: chat, Sender: chat},
-			ID:            id,
-			Timestamp:     at,
-		},
-		Message: &waProto.Message{Conversation: proto.String("hi " + id)},
-	}
-}
 
 func TestMessagesFromWhileOfflineAreShownOnceAndReadOnThePhone(t *testing.T) {
 	ui := &recordingUi{}
@@ -126,8 +77,7 @@ func TestReceiptsOfOthersDontMarkRead(t *testing.T) {
 }
 
 func TestMarkChatReadUntil(t *testing.T) {
-	db := &MessageDatabase{}
-	db.Init()
+	db := newTestDB()
 	chat := "123@s.whatsapp.net"
 	for i, id := range []string{"m1", "m2", "m3"} {
 		db.AddMessage(Message{Id: id, ChatId: chat, Timestamp: uint64(100 + i)}, true)

@@ -25,7 +25,7 @@ func linkCodeHint() string {
 // manager, which waits for the phone to link meanwhile: the client is set
 // before linking starts, see the linking flag.
 func (sm *SessionManager) LinkWithCode(phone string) {
-	client := sm.client
+	client := sm.client()
 	if !sm.linking.Load() || client == nil {
 		sm.uiHandler.PrintText("Linking with a code works while the QR code is shown, e.g. after " + config.Config.General.CmdPrefix + "relink")
 		return

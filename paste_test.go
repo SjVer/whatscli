@@ -13,6 +13,7 @@ import (
 )
 
 func TestPastedImagesAreSavedAsJPEG(t *testing.T) {
+	withUI(t)
 	tmp := t.TempDir()
 	t.Setenv("TMP", tmp)
 	t.Setenv("TEMP", tmp)
@@ -42,6 +43,7 @@ func TestPastedImagesAreSavedAsJPEG(t *testing.T) {
 }
 
 func TestPastingWithAnImageSendsIt(t *testing.T) {
+	withUI(t)
 	defer func() { sessionManager, pastedImage, notices = nil, "", map[string][]notice{} }()
 	sessionManager = &messages.SessionManager{CommandChannel: make(chan messages.Command, 10)}
 	currentReceiver = messages.Chat{Id: "alice"}

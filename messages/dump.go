@@ -15,6 +15,7 @@ import (
 // Dump writes the chat list as whatscli shows it, with the data it is based on,
 // and all unread messages. Used by the -dump command line option for debugging.
 func (sm *SessionManager) Dump(w io.Writer) {
+	client := sm.client()
 	var shown, archived, hidden []Chat
 	for _, chat := range sm.db.GetChatIds() {
 		if chat.Hidden {
@@ -26,7 +27,7 @@ func (sm *SessionManager) Dump(w io.Writer) {
 		}
 	}
 
-	connected := sm.client != nil && sm.client.IsConnected()
+	connected := client != nil && client.IsConnected()
 	fmt.Fprintf(w, "connected: %v\n", connected)
 	if lastReceived := sm.LastReceived(); !lastReceived.IsZero() {
 		fmt.Fprintf(w, "last data received: %s ago\n", time.Since(lastReceived).Round(time.Second))
@@ -64,6 +65,7 @@ func (sm *SessionManager) logAppState(kind string, jid types.JID, timestamp time
 
 // DumpChat writes the messages of a chat that are in memory.
 func (sm *SessionManager) DumpChat(w io.Writer, chatID string) {
+	client := sm.client()
 	msgs := sm.db.GetMessages(chatID)
 	fmt.Fprintf(w, "=== %s (%s): %d messages ===\n", sm.db.GetIdName(chatID), chatID, len(msgs))
 	if picture := sm.chatPicture(chatID); picture != "" {
@@ -72,7 +74,7 @@ func (sm *SessionManager) DumpChat(w io.Writer, chatID string) {
 	if isGroupID(chatID) {
 		// they load in the background
 		members := sm.GroupMembers(chatID)
-		for start := time.Now(); members == nil && sm.client != nil && sm.client.IsConnected() && time.Since(start) < 10*time.Second; members = sm.GroupMembers(chatID) {
+		for start := time.Now(); members == nil && client != nil && client.IsConnected() && time.Since(start) < 10*time.Second; members = sm.GroupMembers(chatID) {
 			time.Sleep(100 * time.Millisecond)
 		}
 		names := make([]string, len(members))
@@ -151,7 +153,8 @@ func (sm *SessionManager) dumpUnread(w io.Writer, chats []Chat) {
 // whatsmeowChatSettings describes the pinned and archived state that whatsmeow
 // stored for a chat, under its phone number and LID.
 func (sm *SessionManager) whatsmeowChatSettings(chatID string) string {
-	if sm.client == nil || sm.client.Store.ChatSettings == nil {
+	client := sm.client()
+	if client == nil || client.Store.ChatSettings == nil {
 		return ""
 	}
 	jid, err := types.ParseJID(chatID)
@@ -160,14 +163,14 @@ func (sm *SessionManager) whatsmeowChatSettings(chatID string) string {
 	}
 	ctx := context.Background()
 	jids := []types.JID{jid}
-	if jid.Server == types.DefaultUserServer && sm.client.Store.LIDs != nil {
-		if lid, err := sm.client.Store.LIDs.GetLIDForPN(ctx, jid); err == nil && !lid.IsEmpty() {
+	if jid.Server == types.DefaultUserServer && client.Store.LIDs != nil {
+		if lid, err := client.Store.LIDs.GetLIDForPN(ctx, jid); err == nil && !lid.IsEmpty() {
 			jids = append(jids, lid)
 		}
 	}
 	var out []string
 	for _, jid := range jids {
-		settings, err := sm.client.Store.ChatSettings.GetChatSettings(ctx, jid)
+		settings, err := client.Store.ChatSettings.GetChatSettings(ctx, jid)
 		if err != nil || !settings.Found {
 			continue
 		}

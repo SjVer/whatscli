@@ -39,6 +39,8 @@ type altServer struct {
 	lock sync.Mutex
 	url  string
 	err  error
+	// closed when the server exits, after which it is started again
+	exited chan struct{}
 	// the process, apart from lock, which is held while it starts, see stopServer
 	cmdLock sync.Mutex
 	cmd     *exec.Cmd
@@ -66,8 +68,17 @@ func llamaArchive(goos, goarch string) string {
 func (sm *SessionManager) ensureServer() (string, error) {
 	sm.altServer.lock.Lock()
 	defer sm.altServer.lock.Unlock()
-	if sm.altServer.url != "" || sm.altServer.err != nil {
-		return sm.altServer.url, sm.altServer.err
+	if sm.altServer.url != "" {
+		select {
+		case <-sm.altServer.exited:
+			sm.logWarn("llama-server stopped, starting it again")
+			sm.altServer.url = ""
+		default:
+			return sm.altServer.url, nil
+		}
+	}
+	if sm.altServer.err != nil {
+		return "", sm.altServer.err
 	}
 	sm.uiHandler.SetNotice("", altTextNotice, "Starting the model for alt texts, the first time it is downloaded, which can take a while...")
 	sm.altServer.url, sm.altServer.err = sm.startServer()
@@ -112,6 +123,7 @@ func (sm *SessionManager) startServer() (string, error) {
 		return "", err
 	}
 	stopped := make(chan struct{})
+	sm.altServer.exited = stopped
 	go func() {
 		// its progress, e.g. of downloading the model
 		for lines := bufio.NewScanner(output); lines.Scan(); {
@@ -127,7 +139,7 @@ func (sm *SessionManager) startServer() (string, error) {
 			return "", errors.New("llama-server stopped, see the log")
 		default:
 		}
-		if resp, err := http.Get(url + "/health"); err == nil {
+		if resp, err := healthClient.Get(url + "/health"); err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return url, nil
@@ -137,6 +149,9 @@ func (sm *SessionManager) startServer() (string, error) {
 	cmd.Process.Kill()
 	return "", errors.New("llama-server didn't start in time")
 }
+
+// healthClient asks the server whether it runs
+var healthClient = http.Client{Timeout: 5 * time.Second}
 
 // stopServer stops llama-server when whatscli closes, also while it starts
 func (sm *SessionManager) stopServer() {
@@ -158,7 +173,8 @@ func downloadServer(dir string) (string, error) {
 	if archive == "" {
 		return "", fmt.Errorf("llama.cpp has no release for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
-	resp, err := http.Get("https://github.com/ggml-org/llama.cpp/releases/download/" + llamaBuild + "/" + archive)
+	download := http.Client{Timeout: 30 * time.Minute}
+	resp, err := download.Get("https://github.com/ggml-org/llama.cpp/releases/download/" + llamaBuild + "/" + archive)
 	if err != nil {
 		return "", err
 	}
@@ -170,7 +186,14 @@ func downloadServer(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err = unpack(data, strings.HasSuffix(archive, ".zip"), dir); err != nil {
+	// unpacked next to it first, so that an unpack that was cut off isn't used
+	tmp := dir + ".tmp"
+	os.RemoveAll(tmp)
+	if err = unpack(data, strings.HasSuffix(archive, ".zip"), tmp); err != nil {
+		os.RemoveAll(tmp)
+		return "", err
+	}
+	if err = os.Rename(tmp, dir); err != nil {
 		return "", err
 	}
 	if binary := findServer(dir); binary != "" {
@@ -198,10 +221,18 @@ func findServer(dir string) string {
 
 // unpack writes the files of a zip or tar.gz archive into dir
 func unpack(data []byte, isZip bool, dir string) error {
-	write := func(name string, mode os.FileMode, content io.Reader) error {
+	// inside returns the path of a file of the archive, if it is in dir
+	inside := func(name string) (string, error) {
 		path := filepath.Join(dir, filepath.FromSlash(name))
 		if !strings.HasPrefix(path, filepath.Clean(dir)+string(os.PathSeparator)) {
-			return fmt.Errorf("unsafe path in the archive: %s", name)
+			return "", fmt.Errorf("unsafe path in the archive: %s", name)
+		}
+		return path, nil
+	}
+	write := func(name string, mode os.FileMode, content io.Reader) error {
+		path, err := inside(name)
+		if err != nil {
+			return err
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 			return err
@@ -253,8 +284,13 @@ func unpack(data []byte, isZip bool, dir string) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			// libraries on macOS and Linux, by their version
-			path := filepath.Join(dir, filepath.FromSlash(entry.Name))
+			// libraries on macOS and Linux, by their version, next to them
+			path, err := inside(entry.Name)
+			if err != nil {
+				return err
+			} else if filepath.IsAbs(entry.Linkname) || strings.Contains(entry.Linkname, "..") {
+				return fmt.Errorf("unsafe link in the archive: %s", entry.Name)
+			}
 			os.MkdirAll(filepath.Dir(path), 0755)
 			os.Remove(path)
 			if err = os.Symlink(entry.Linkname, path); err != nil {

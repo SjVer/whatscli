@@ -37,6 +37,7 @@ func styleAt(screen tcell.SimulationScreen, x, y int) tcell.Style {
 }
 
 func TestMessageFormattingIsDrawn(t *testing.T) {
+	withUI(t)
 	msg := messages.Message{Id: "1", ContactShort: "Bob", Timestamp: 1000, Text: "_it_ *bo*"}
 	screen := drawText(t, getTextMessageString(&msg, nil, 0))
 	// the text is on the line below the header
@@ -49,6 +50,7 @@ func TestMessageFormattingIsDrawn(t *testing.T) {
 }
 
 func TestHelpHeaderUnderlineEnds(t *testing.T) {
+	withUI(t)
 	screen := drawText(t, "[-::u]Keys:[-::U]\nGlobal")
 	if styleAt(screen, 0, 0).GetUnderlineStyle() == tcell.UnderlineStyleNone {
 		t.Error("expected the header to be underlined")
@@ -59,6 +61,7 @@ func TestHelpHeaderUnderlineEnds(t *testing.T) {
 }
 
 func TestChatListEntriesUseConfiguredBackground(t *testing.T) {
+	withUI(t)
 	node := setNodeColor(tview.NewTreeNode("Alice"), tcell.ColorGreen)
 	fg, bg, _ := node.GetTextStyle().Decompose()
 	if fg != tcell.ColorGreen || bg != tcell.ColorNames[config.Config.Colors.Background] {
@@ -67,6 +70,7 @@ func TestChatListEntriesUseConfiguredBackground(t *testing.T) {
 }
 
 func TestWrappedLineCountMatchesTheInput(t *testing.T) {
+	withUI(t)
 	texts := []string{
 		"short",
 		"one two three four five six seven eight nine ten",
@@ -104,6 +108,7 @@ func TestWrappedLineCountMatchesTheInput(t *testing.T) {
 }
 
 func TestGrownInputShowsAllLines(t *testing.T) {
+	withUI(t)
 	screen := newScreen(t, 12, 8)
 	textInput = tview.NewTextArea()
 	grid := tview.NewGrid().SetRows(1, 0, 1)
@@ -132,6 +137,7 @@ func TestGrownInputShowsAllLines(t *testing.T) {
 }
 
 func TestGreyChatListKeepsUnreadCountsColored(t *testing.T) {
+	withUI(t)
 	screen := newScreen(t, 30, 4)
 	root := setNodeColor(tview.NewTreeNode("Chats"), tcell.ColorNames[config.Config.Colors.ListHeader])
 	root.AddChild(setNodeColor(tview.NewTreeNode(chatNodeText(messages.Chat{Id: "alice", Name: "Alice", Unread: 3})), tcell.ColorGreen))
@@ -163,6 +169,7 @@ func TestGreyChatListKeepsUnreadCountsColored(t *testing.T) {
 }
 
 func TestEscapeInEmptyInputScrollsToTheNewestMessages(t *testing.T) {
+	withUI(t)
 	textView = tview.NewTextView().SetDynamicColors(true).SetRegions(true)
 	textView.SetRect(0, 0, 20, 3)
 	for i := 0; i < 20; i++ {
@@ -182,6 +189,7 @@ func TestEscapeInEmptyInputScrollsToTheNewestMessages(t *testing.T) {
 }
 
 func TestOpeningAChatScrollsToItsNewestMessages(t *testing.T) {
+	withUI(t)
 	sessionManager = &messages.SessionManager{CommandChannel: make(chan messages.Command, 10)}
 	defer func() { sessionManager = nil }()
 	textInput = newTextInput()
@@ -208,6 +216,7 @@ func TestOpeningAChatScrollsToItsNewestMessages(t *testing.T) {
 }
 
 func TestUnreadMessagesAndReactionsAreHighlighted(t *testing.T) {
+	withUI(t)
 	unread := tcell.ColorNames[config.Config.Colors.UnreadCount]
 	currentReceiver = messages.Chat{Id: "alice", UnreadReactions: []int64{1300}}
 	read := messages.Message{Id: "1", ContactId: "alice", ContactShort: "Alice", Timestamp: 1000, Text: "old"}
@@ -250,6 +259,7 @@ func TestUnreadMessagesAndReactionsAreHighlighted(t *testing.T) {
 }
 
 func TestGreyedOutNoticesAreNotDimmer(t *testing.T) {
+	withUI(t)
 	screen := newScreen(t, 40, 4)
 	treeView = tview.NewTreeView()
 	textView = tview.NewTextView().SetDynamicColors(true)
@@ -265,6 +275,7 @@ func TestGreyedOutNoticesAreNotDimmer(t *testing.T) {
 }
 
 func TestProfileNamesAreItalic(t *testing.T) {
+	withUI(t)
 	defer func(check func(string) bool) { isProfileName = check }(isProfileName)
 	isProfileName = func(id string) bool { return id == "bob" }
 	// the attributes of the first letter of a name in the header
@@ -288,6 +299,7 @@ func TestProfileNamesAreItalic(t *testing.T) {
 }
 
 func TestShowingAnAttachmentKeepsThePlace(t *testing.T) {
+	withUI(t)
 	defer func(view *tview.TextView) { sessionManager, app, textView = nil, nil, view }(textView)
 	sessionManager = &messages.SessionManager{CommandChannel: make(chan messages.Command, 10)}
 	app = tview.NewApplication()
@@ -310,6 +322,7 @@ func TestShowingAnAttachmentKeepsThePlace(t *testing.T) {
 }
 
 func TestScrollingByTheConfiguredLines(t *testing.T) {
+	withUI(t)
 	defer func(view *tview.TextView, lines int) { textView, config.Config.Ui.ScrollLines = view, lines }(textView, config.Config.Ui.ScrollLines)
 	config.Config.Ui.ScrollLines = 3
 	textView = tview.NewTextView()
@@ -338,6 +351,7 @@ func TestScrollingByTheConfiguredLines(t *testing.T) {
 }
 
 func TestShowingTheChatListAgainKeepsTheOpenChat(t *testing.T) {
+	withUI(t)
 	defer func(view *tview.TextView, tree *tview.TreeView, root *tview.TreeNode, chat messages.Chat, chats []messages.Chat) {
 		sessionManager, textView, treeView, chatRoot, currentReceiver, allChats = nil, view, tree, root, chat, chats
 	}(textView, treeView, chatRoot, currentReceiver, allChats)
@@ -365,6 +379,7 @@ func TestShowingTheChatListAgainKeepsTheOpenChat(t *testing.T) {
 }
 
 func TestArchiveKeyOfTheChatList(t *testing.T) {
+	withUI(t)
 	defer func(tree *tview.TreeView) { sessionManager, treeView = nil, tree }(treeView)
 	sessionManager = &messages.SessionManager{CommandChannel: make(chan messages.Command, 10)}
 	for _, test := range []struct {
@@ -389,6 +404,7 @@ func TestArchiveKeyOfTheChatList(t *testing.T) {
 }
 
 func TestAMessageThatArrivesLooksLikeTheOthers(t *testing.T) {
+	withUI(t)
 	defer func(view *tview.TextView, chat messages.Chat) { textView, currentReceiver = view, chat }(textView, currentReceiver)
 	notices, messageSearch = map[string][]notice{}, ""
 	currentReceiver = messages.Chat{Id: "alice"}
@@ -431,6 +447,7 @@ func TestAMessageThatArrivesLooksLikeTheOthers(t *testing.T) {
 }
 
 func TestMediaLabelsHaveTheirOwnColor(t *testing.T) {
+	withUI(t)
 	msg := messages.Message{Id: "1", ContactShort: "Bob", Timestamp: 1000, Kind: messages.MessageKindImage,
 		Text: "[IMAGE] look", AltText: "a dog"}
 	screen := drawText(t, getTextMessageString(&msg, nil, 0))
@@ -453,6 +470,7 @@ func TestMediaLabelsHaveTheirOwnColor(t *testing.T) {
 }
 
 func TestStatusMessagesAreDim(t *testing.T) {
+	withUI(t)
 	defer func(view *tview.TextView) { textView = view }(textView)
 	textView = tview.NewTextView().SetDynamicColors(true)
 	textView.SetRect(0, 0, 40, 3)
@@ -465,4 +483,21 @@ func TestStatusMessagesAreDim(t *testing.T) {
 			t.Errorf("expected line %d to be dim", y)
 		}
 	}
+}
+
+// withUI restores the globals of the UI when the test ends, which it can change
+func withUI(t *testing.T) {
+	view, input, tree, root, application, manager := textView, textInput, treeView, chatRoot, app, sessionManager
+	chat, msgs, regions, chats := currentReceiver, chatMessages, curRegions, allChats
+	savedNotices, savedDrafts, emoji := notices, drafts, recentEmoji
+	search, listSearch, reply, image, react, lines := messageSearch, chatSearch, replyTarget, pastedImage, reactTarget, inputLines
+	reaction, printed := endedWithReaction, printedSinceRender.Load()
+	t.Cleanup(func() {
+		textView, textInput, treeView, chatRoot, app, sessionManager = view, input, tree, root, application, manager
+		currentReceiver, chatMessages, curRegions, allChats = chat, msgs, regions, chats
+		notices, drafts, recentEmoji = savedNotices, savedDrafts, emoji
+		messageSearch, chatSearch, replyTarget, pastedImage, reactTarget, inputLines = search, listSearch, reply, image, react, lines
+		endedWithReaction = reaction
+		printedSinceRender.Store(printed)
+	})
 }

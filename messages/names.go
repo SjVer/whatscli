@@ -76,12 +76,13 @@ func isFallbackName(chatID, name string) bool {
 // for the messages it receives itself, not for the ones loaded from the phone,
 // and returns whether it changed.
 func (sm *SessionManager) learnPushName(user types.JID, name string) bool {
-	if sm.client == nil || sm.client.Store.Contacts == nil || name == "" || name == "-" {
+	client := sm.client()
+	if client == nil || client.Store.Contacts == nil || name == "" || name == "-" {
 		return false
 	}
 	ctx := context.Background()
 	user = user.ToNonAD()
-	changed, _, err := sm.client.Store.Contacts.PutPushName(ctx, user, name)
+	changed, _, err := client.Store.Contacts.PutPushName(ctx, user, name)
 	if err != nil {
 		sm.logWarn("Failed to store the profile name of %s: %v", user, err)
 		return false
@@ -89,8 +90,8 @@ func (sm *SessionManager) learnPushName(user types.JID, name string) bool {
 		return false
 	}
 	// also under the phone number or LID, as whatsmeow does
-	if alt, err := sm.client.Store.GetAltJID(ctx, user); err == nil && !alt.IsEmpty() {
-		if _, _, err = sm.client.Store.Contacts.PutPushName(ctx, alt.ToNonAD(), name); err != nil {
+	if alt, err := client.Store.GetAltJID(ctx, user); err == nil && !alt.IsEmpty() {
+		if _, _, err = client.Store.Contacts.PutPushName(ctx, alt.ToNonAD(), name); err != nil {
 			sm.logWarn("Failed to store the profile name of %s: %v", alt, err)
 		}
 	}

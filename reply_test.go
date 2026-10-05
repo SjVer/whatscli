@@ -10,6 +10,7 @@ import (
 )
 
 func TestReplyIsShownAboveTheMessage(t *testing.T) {
+	withUI(t)
 	defer func(msgs []messages.Message) { chatMessages = msgs }(chatMessages)
 	chatMessages = nil // the replied message isn't loaded
 	msg := messages.Message{Id: "2", ContactShort: "Alice", Timestamp: 1000, Text: "yes!",
@@ -29,6 +30,7 @@ func TestReplyIsShownAboveTheMessage(t *testing.T) {
 }
 
 func TestReplyingToASelectedMessage(t *testing.T) {
+	withUI(t)
 	defer func(view *tview.TextView, input *tview.TextArea, root *tview.TreeNode, chat messages.Chat, msgs []messages.Message) {
 		sessionManager, app, notices = nil, nil, map[string][]notice{}
 		textView, textInput, chatRoot, currentReceiver, chatMessages = view, input, root, chat, msgs
@@ -68,6 +70,7 @@ func TestReplyingToASelectedMessage(t *testing.T) {
 }
 
 func TestRepliesToImagesShowTheirAltText(t *testing.T) {
+	withUI(t)
 	defer func(msgs []messages.Message) { chatMessages = msgs }(chatMessages)
 	chatMessages = []messages.Message{{Id: "img", Text: "[IMAGE] look", AltText: "a dog on a beach", Kind: messages.MessageKindImage}}
 	line := replyLine(&messages.Reply{Id: "img", Name: "Bob", Text: "[IMAGE] look"})
