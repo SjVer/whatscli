@@ -386,11 +386,52 @@ func mentionQueryAt(text string, cursor int) (int, string, bool) {
 
 // groupMembers returns the members of the open chat that can be mentioned,
 // none if it isn't a group
-func groupMembers() []messages.Member {
+var groupMembers = func() []messages.Member {
 	if sessionManager == nil {
 		return nil
 	}
 	return sessionManager.GroupMembers(currentReceiver.Id)
+}
+
+// highlightInputMentions colors the mentions of group members in the input
+// like the ones in messages: the input can't color parts of its text, so the
+// mentions are found on the screen after it is drawn
+func highlightInputMentions(screen tcell.Screen) {
+	members := groupMembers()
+	if len(members) == 0 || !strings.Contains(textInput.GetText(), "@") {
+		return
+	}
+	// longer names first, so that @Ann Lee isn't taken for @Ann
+	names := make([]string, 0, len(members))
+	for _, member := range members {
+		names = append(names, "@"+member.Name)
+	}
+	sort.Slice(names, func(i, j int) bool { return len(names[i]) > len(names[j]) })
+	color := tcell.ColorNames[config.Config.Colors.Mention]
+	x, y, width, height := textInput.GetInnerRect()
+	for row := y; row < y+height; row++ {
+		// the characters of the row, and the column of each
+		var line []rune
+		var columns []int
+		for column := x; column < x+width; column++ {
+			if r, _, _, _ := screen.GetContent(column, row); r != 0 {
+				line = append(line, r)
+				columns = append(columns, column)
+			}
+		}
+		text := string(line)
+		for _, name := range names {
+			for start := strings.Index(text, name); start >= 0; start = strings.Index(text, name) {
+				first := utf8.RuneCountInString(text[:start])
+				for i := first; i < first+utf8.RuneCountInString(name); i++ {
+					mainc, combc, style, _ := screen.GetContent(columns[i], row)
+					screen.SetContent(columns[i], row, mainc, combc, style.Foreground(color))
+				}
+				// not found again, also not as a shorter name in it
+				text = text[:start] + "#" + text[start+1:]
+			}
+		}
+	}
 }
 
 // matchMembers returns up to limit members whose name contains query, the ones

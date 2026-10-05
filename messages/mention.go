@@ -166,7 +166,7 @@ func (sm *SessionManager) showMentions(text string, mentioned []string) (string,
 			continue
 		}
 		// as the number when no name is known, like the phone does
-		name, ok := "You", true
+		name, ok := sm.ownName(), true
 		if !sm.isOwnUser(jid) {
 			name, ok = sm.realName(jid)
 		}
@@ -180,6 +180,15 @@ func (sm *SessionManager) showMentions(text string, mentioned []string) (string,
 		}
 	}
 	return text, shown
+}
+
+// ownName returns the profile name of the user, which mentions of them show
+// like on the phone, or "You" when it isn't known
+func (sm *SessionManager) ownName() string {
+	if client := sm.client; client != nil && client.Store.PushName != "" {
+		return client.Store.PushName
+	}
+	return "You"
 }
 
 // isOwnUser returns whether jid is the user, by number or LID

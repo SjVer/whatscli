@@ -451,3 +451,18 @@ func TestMediaLabelsHaveTheirOwnColor(t *testing.T) {
 		t.Errorf("unexpected text %q", text)
 	}
 }
+
+func TestStatusMessagesAreDim(t *testing.T) {
+	defer func(view *tview.TextView) { textView = view }(textView)
+	textView = tview.NewTextView().SetDynamicColors(true)
+	textView.SetRect(0, 0, 40, 3)
+	UiHandler{}.PrintText("No unread messages in current chat")
+	PrintHint("there is no image on the clipboard")
+	screen := newScreen(t, 40, 3)
+	textView.Draw(screen)
+	for y := 0; y < 2; y++ {
+		if _, _, attr := styleAt(screen, 0, y).Decompose(); attr&tcell.AttrDim == 0 {
+			t.Errorf("expected line %d to be dim", y)
+		}
+	}
+}

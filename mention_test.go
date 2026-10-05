@@ -3,7 +3,10 @@ package main
 import (
 	"testing"
 
+	"github.com/gdamore/tcell/v2"
+	"github.com/normen/whatscli/config"
 	"github.com/normen/whatscli/messages"
+	"github.com/rivo/tview"
 )
 
 func TestMentionQueryAt(t *testing.T) {
@@ -36,4 +39,40 @@ func TestMatchMembers(t *testing.T) {
 	if all := matchMembers(members, "", 2); len(all) != 2 {
 		t.Errorf("expected the limit to apply, got %v", all)
 	}
+}
+
+func TestMentionsAreHighlightedInTheInput(t *testing.T) {
+	defer func(members func() []messages.Member, input *tview.TextArea) {
+		groupMembers, textInput = members, input
+	}(groupMembers, textInput)
+	groupMembers = func() []messages.Member {
+		return []messages.Member{{Id: "1@lid", Name: "Ann"}, {Id: "2@lid", Name: "Ann Lee"}, {Id: "3@lid", Name: "Bob"}}
+	}
+	textInput = newTextInput()
+	textInput.SetText("hi @Ann Lee and Bob", false)
+	textInput.SetRect(0, 0, 30, 1)
+	screen := tcell.NewSimulationScreen("")
+	screen.Init()
+	screen.SetSize(30, 1)
+	textInput.Draw(screen)
+	highlightInputMentions(screen)
+
+	mention := tcell.ColorNames[config.Config.Colors.Mention]
+	colors := ""
+	for x := 0; x < 19; x++ {
+		if _, _, style, _ := screen.GetContent(x, 0); colorOf(style) == mention {
+			colors += "m"
+		} else {
+			colors += "."
+		}
+	}
+	// "hi @Ann Lee and Bob": the whole longer name, and not Bob without an @
+	if colors != "...mmmmmmmm........" {
+		t.Errorf("expected only the mention to be colored, got %q", colors)
+	}
+}
+
+func colorOf(style tcell.Style) tcell.Color {
+	fg, _, _ := style.Decompose()
+	return fg
 }

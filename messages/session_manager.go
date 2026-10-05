@@ -854,7 +854,7 @@ func (sm *SessionManager) setChatArchived(params []string, archive bool) {
 		}
 	}
 	if chat.Id != "" && chat.InArchive == archive {
-		sm.uiHandler.PrintText(sm.db.GetIdName(chatID) + " is " + state + " already")
+		sm.uiHandler.PrintText(tview.Escape(sm.db.GetIdName(chatID) + " is " + state + " already"))
 		return
 	}
 	target, err := sm.phoneChatJID(chatID)
@@ -884,13 +884,13 @@ func (sm *SessionManager) setChatArchived(params []string, archive bool) {
 	if !archive {
 		sm.db.SetChatArchived(chatID, false, 0)
 		sm.uiHandler.SetChats(sm.db.GetChatIds())
-		sm.uiHandler.PrintText(done + " " + sm.db.GetIdName(chatID))
+		sm.uiHandler.PrintText(done + " " + tview.Escape(sm.db.GetIdName(chatID)))
 		return
 	}
 	sm.db.SetChatArchived(chatID, true, max(lastTime.Unix(), chat.LastMessage, chat.LastIncoming))
 	sm.db.SetChatPinned(chatID, false, 0)
 	sm.uiHandler.SetChats(sm.db.GetChatIds())
-	sm.uiHandler.PrintText(done + " " + sm.db.GetIdName(chatID))
+	sm.uiHandler.PrintText(done + " " + tview.Escape(sm.db.GetIdName(chatID)))
 	// like on the phone, an archived chat is left
 	sm.uiHandler.CloseChat(chatID)
 }

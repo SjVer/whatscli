@@ -143,6 +143,7 @@ func main() {
 	})
 	app.SetAfterDrawFunc(func(screen tcell.Screen) {
 		greyOutUnfocusedPanel(screen)
+		highlightInputMentions(screen)
 		drawSuggestions(screen)
 		updateTitle(screen)
 		chatListFocused.Store(treeView.HasFocus())
@@ -1701,8 +1702,10 @@ func (u UiHandler) PrintError(err error) {
 	PrintError(err)
 }
 
+// PrintText prints a status message of the session manager, dim like the
+// hints, so that it isn't taken for a message
 func (u UiHandler) PrintText(msg string) {
-	PrintText(msg)
+	PrintText("[::d]" + msg + "[::-]")
 }
 
 // OpenFile opens a file or URL with its default app, without waiting for it

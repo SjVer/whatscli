@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rivo/tview"
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
 )
@@ -33,7 +34,7 @@ type chatSync struct {
 // has and only sends to newly linked devices. It removes the login, the cache
 // database and the saved chats first, so that everything comes from the phone.
 func (sm *SessionManager) relink() {
-	sm.uiHandler.PrintText("[1/3] Unlinking whatscli and removing its stored data...")
+	sm.uiHandler.PrintText(tview.Escape("[1/3] Unlinking whatscli and removing its stored data..."))
 	// the old login would be used again if it stays
 	if err := sm.removeSession(true); err != nil {
 		sm.uiHandler.PrintError(err)
@@ -46,7 +47,7 @@ func (sm *SessionManager) relink() {
 		chats:        make(map[string]struct{}),
 		appStateDone: make(map[appstate.WAPatchName]struct{}),
 	})
-	sm.uiHandler.PrintText("[2/3] Link whatscli again: on your phone open WhatsApp > Settings > Linked devices > Link a device")
+	sm.uiHandler.PrintText(tview.Escape("[2/3] Link whatscli again: on your phone open WhatsApp > Settings > Linked devices > Link a device"))
 	if err := sm.login(); err != nil {
 		sm.uiHandler.PrintError(err)
 		sm.setChatSync(nil)
@@ -169,5 +170,5 @@ func (cs *chatSync) finishLocked() {
 // print shows a progress line with the time since the sync started.
 func (cs *chatSync) print(text string) {
 	elapsed := time.Since(cs.start).Round(time.Second)
-	cs.sm.uiHandler.PrintText(fmt.Sprintf("[::d][%s][::-] %s", elapsed, text))
+	cs.sm.uiHandler.PrintText(tview.Escape(fmt.Sprintf("[%s] %s", elapsed, text)))
 }
