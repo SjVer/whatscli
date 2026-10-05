@@ -754,6 +754,13 @@ func (sm *SessionManager) execCommand(command Command) {
 		sm.sendMediaCommand(command.Params, MessageKindDocument)
 	case "sendimage":
 		sm.sendMediaCommand(command.Params, MessageKindImage)
+	case "pasteimage":
+		// an image from the clipboard, saved by the UI, with a caption
+		if checkParam(command.Params, 2) {
+			sm.uiHandler.PrintError(sm.sendMedia(command.Params[0], command.Params[1], MessageKindImage, strings.Join(command.Params[2:], " ")))
+		} else {
+			sm.printCommandUsage("pasteimage", "[chat-id[] [/path/to/image[] [caption[]")
+		}
 	case "sendvideo":
 		sm.sendMediaCommand(command.Params, MessageKindVideo)
 	case "sendaudio":
@@ -1034,7 +1041,7 @@ func (sm *SessionManager) sendMediaCommand(params []string, kind MessageKind) {
 		return
 	}
 	path := strings.Join(params, " ")
-	sm.uiHandler.PrintError(sm.sendMedia(sm.openChat(), path, kind))
+	sm.uiHandler.PrintError(sm.sendMedia(sm.openChat(), path, kind, ""))
 }
 
 func (sm *SessionManager) revokeMessage(params []string) {
@@ -1357,7 +1364,16 @@ func (sm *SessionManager) messageSent(msg Message) {
 	}
 }
 
-func (sm *SessionManager) sendMedia(chatID, path string, kind MessageKind) error {
+// optionalString returns a pointer to text, or nil if it is empty
+func optionalString(text string) *string {
+	if text == "" {
+		return nil
+	}
+	return &text
+}
+
+// sendMedia sends a file as a message of the kind, images and videos with a caption
+func (sm *SessionManager) sendMedia(chatID, path string, kind MessageKind, caption string) error {
 	if sm.client == nil || !sm.client.IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
@@ -1382,6 +1398,7 @@ func (sm *SessionManager) sendMedia(chatID, path string, kind MessageKind) error
 	switch kind {
 	case MessageKindImage:
 		raw.ImageMessage = &waProto.ImageMessage{
+			Caption:       optionalString(caption),
 			Mimetype:      proto.String(mimeType),
 			URL:           &uploadResp.URL,
 			DirectPath:    &uploadResp.DirectPath,
@@ -1392,6 +1409,7 @@ func (sm *SessionManager) sendMedia(chatID, path string, kind MessageKind) error
 		}
 	case MessageKindVideo:
 		raw.VideoMessage = &waProto.VideoMessage{
+			Caption:       optionalString(caption),
 			Mimetype:      proto.String(mimeType),
 			URL:           &uploadResp.URL,
 			DirectPath:    &uploadResp.DirectPath,
@@ -1432,7 +1450,7 @@ func (sm *SessionManager) sendMedia(chatID, path string, kind MessageKind) error
 		return fmt.Errorf("failed to send media message: %v", err)
 	}
 
-	text := mediaDisplayText(kind, fileName, "")
+	text := mediaDisplayText(kind, fileName, caption)
 	newMsg := sm.outgoingMessageFromSendResponse(resp, chatID, raw, kind, text, mimeType, fileName)
 	sm.messageSent(newMsg)
 	return nil

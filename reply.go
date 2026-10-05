@@ -66,6 +66,10 @@ func cancelReply() {
 // sendMessage sends the typed message to the open chat, as a reply if one was started
 func sendMessage(text string) {
 	text = replaceShortcodes(text)
+	if pastedImage != "" {
+		sendPastedImage(text)
+		return
+	}
 	command := messages.Command{Name: "send", Params: []string{currentReceiver.Id, text}}
 	if replyTarget != "" {
 		command = messages.Command{Name: "reply", Params: []string{currentReceiver.Id, replyTarget, text}}

@@ -12,7 +12,7 @@ func TestOldPreviewsAreRemoved(t *testing.T) {
 	t.Setenv("TMP", tmp)
 	t.Setenv("TEMP", tmp)
 	t.Setenv("TMPDIR", tmp)
-	dir := tempPreviewDir()
+	dir := TempFolder()
 	os.MkdirAll(dir, 0700)
 	old, fresh := filepath.Join(dir, "old.jpg"), filepath.Join(dir, "fresh.jpg")
 	os.WriteFile(old, []byte("x"), 0600)

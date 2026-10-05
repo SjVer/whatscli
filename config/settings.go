@@ -53,6 +53,8 @@ type Keymap struct {
 	MessageReply    string
 	// archives or unarchives the selected chat in the chat list
 	ChatArchive string
+	// attaches the image on the clipboard to the typed message
+	PasteImage string
 }
 
 type Ui struct {
@@ -114,6 +116,7 @@ var Config = IniFile{
 		MessageReact:    "e",
 		MessageReply:    "a",
 		ChatArchive:     "a",
+		PasteImage:      "Alt+v",
 	},
 	&Ui{
 		ChatSidebarWidth: 30,

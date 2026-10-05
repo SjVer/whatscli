@@ -19,6 +19,7 @@ require (
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 	github.com/zyedidia/clipboard v1.0.3
 	go.mau.fi/whatsmeow v0.0.0-20260730092514-662ad1dc6900
+	golang.design/x/clipboard v0.11.0
 	golang.org/x/sys v0.47.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/ini.v1 v1.62.0
@@ -28,6 +29,7 @@ require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/beeper/argo-go v1.1.2 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
+	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
 	github.com/gdamore/encoding v1.0.1 // indirect
 	github.com/godbus/dbus/v5 v5.0.4 // indirect
@@ -42,8 +44,12 @@ require (
 	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
 	go.mau.fi/libsignal v0.2.2 // indirect
 	go.mau.fi/util v0.9.12-0.20260717235539-f9ffa7eca58d // indirect
+	golang.design/x/x11 v0.2.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/exp v0.0.0-20260709172345-9ea1abe57597 // indirect
+	golang.org/x/exp/shiny v0.0.0-20250606033433-dcc06ee1d476 // indirect
+	golang.org/x/image v0.28.0 // indirect
+	golang.org/x/mobile v0.0.0-20250606033058-a2a15c67f36f // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/term v0.45.0 // indirect

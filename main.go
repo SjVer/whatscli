@@ -513,13 +513,13 @@ func handleCopyUser(ev *tcell.EventKey) *tcell.EventKey {
 		for _, val := range curRegions {
 			if val.Id == hls[0] {
 				clipboard.WriteAll(val.ContactId, "clipboard")
-				PrintText("copied id of " + val.ContactName + " to clipboard")
+				PrintHint("copied id of " + val.ContactName + " to clipboard")
 			}
 		}
 		ResetMsgSelection()
 	} else if currentReceiver.Id != "" {
 		clipboard.WriteAll(currentReceiver.Id, "clipboard")
-		PrintText("copied id of " + currentReceiver.Name + " to clipboard")
+		PrintHint("copied id of " + currentReceiver.Name + " to clipboard")
 	}
 	return nil
 }
@@ -597,7 +597,7 @@ func React(emoji string) {
 		}
 	}
 	if target == "" {
-		PrintText("select a message first: " + config.Config.Keymap.FocusMessages + " and up/down, then " + config.Config.Keymap.MessageReact)
+		PrintHint("select a message first: " + config.Config.Keymap.FocusMessages + " and up/down, then " + config.Config.Keymap.MessageReact)
 		return
 	}
 	sendCommand(messages.Command{Name: "react", Params: []string{target, replaceShortcodes(emoji)}})
@@ -732,6 +732,9 @@ func LoadShortcuts() {
 	if err := keyBindings.Set(config.Config.Keymap.CommandHelp, handleHelp); err != nil {
 		PrintErrorMsg("command_help:", err)
 	}
+	if err := keyBindings.Set(config.Config.Keymap.PasteImage, handlePasteImage); err != nil {
+		PrintErrorMsg("paste_image:", err)
+	}
 	app.SetInputCapture(keyBindings.Capture)
 	// bindings for chat message text view
 	keysMessages := cbind.NewConfiguration()
@@ -792,6 +795,7 @@ func PrintHelp() {
 	fmt.Fprintln(textView, "[::b] Enter[::-] = Send message")
 	fmt.Fprintln(textView, "[::b] Shift+Enter[::-] = New line")
 	fmt.Fprintln(textView, "[::b] Ctrl+Backspace / Ctrl+Delete[::-] = Delete word before / after the cursor")
+	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.PasteImage, "[::-] = Attach the image on the clipboard, the typed text is its caption")
 	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "[-::-]Emoji[-::-]")
 	if config.Config.General.EmojiShortcodes {
@@ -866,11 +870,13 @@ func PrintCommands() {
 func EnterCommand(key tcell.Key) {
 	text := textInput.GetText()
 	if key == tcell.KeyEsc {
-		// clear the input first, then the reply, then the search results, then
-		// scroll the chat back down to the newest messages
+		// clear the input first, then the attached image and the reply, then
+		// the search results, then scroll the chat back down to the newest messages
 		reactTarget = ""
 		if text != "" {
 			setInput("")
+		} else if pastedImage != "" {
+			removePastedImage()
 		} else if replyTarget != "" {
 			cancelReply()
 		} else if messageSearch != "" || chatSearch != "" {
@@ -880,14 +886,14 @@ func EnterCommand(key tcell.Key) {
 		}
 		return
 	}
-	if text == "" {
+	if text == "" && pastedImage == "" {
 		return
 	}
 	defer setInput("")
 	name, args, isCommand := cutCommand(text)
 	if !isCommand {
 		if currentReceiver.Id == "" {
-			PrintText("no receiver")
+			PrintHint("open a chat to send a message")
 			return
 		}
 		sendMessage(text)
@@ -939,6 +945,12 @@ func ResetMsgSelection() {
 		textView.Highlight("")
 	}
 	textView.ScrollToEnd()
+}
+
+// PrintHint prints a short answer of whatscli, like that something can't be
+// done, dim so that it isn't taken for a message
+func PrintHint(text string) {
+	PrintText("[::d]" + tview.Escape(text) + "[::-]")
 }
 
 // prints text to the TextView
@@ -1045,15 +1057,16 @@ func sendCommand(command messages.Command) {
 	select {
 	case sessionManager.CommandChannel <- command:
 	default:
-		PrintText("whatscli is busy, e.g. waiting for the phone to link, try again in a moment")
+		PrintHint("whatscli is busy, e.g. waiting for the phone to link, try again in a moment")
 	}
 }
 
 // sets the current chat, loads text from storage to TextView
 func SetDisplayedChat(wid messages.Chat) {
 	if wid.Id != currentReceiver.Id {
-		// the reply is to a message in the other chat
+		// the reply and the image are of the other chat
 		cancelReply()
+		removePastedImage()
 		setInput(switchDraft(currentReceiver.Id, wid.Id, textInput.GetText()))
 		updateChatNode(currentReceiver.Id)
 		updateChatNode(wid.Id)

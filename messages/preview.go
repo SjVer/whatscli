@@ -22,18 +22,19 @@ func previewDir() string {
 	if path := config.Config.General.PreviewPath; path != "" {
 		return path
 	}
-	return tempPreviewDir()
+	return TempFolder()
 }
 
-// tempPreviewDir is the folder of whatscli in the temporary folder of the system
-func tempPreviewDir() string {
+// TempFolder returns the folder of whatscli in the temporary folder of the
+// system, whose files older than previewKeep are removed, see cleanPreviews
+func TempFolder() string {
 	return filepath.Join(os.TempDir(), "whatscli")
 }
 
 // cleanPreviews removes the opened attachments that are older than
 // previewKeep from the temporary folder, never from a folder of the user
 func (sm *SessionManager) cleanPreviews() {
-	dir := tempPreviewDir()
+	dir := TempFolder()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return // nothing was opened yet
