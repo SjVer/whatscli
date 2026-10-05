@@ -24,8 +24,11 @@ type General struct {
 	PreviewPath         string
 	CmdPrefix           string
 	EnableNotifications bool
-	UseTerminalBell     bool
-	BacklogMsgQuantity  int
+	// a Hugging Face repo of a vision model that describes images and stickers,
+	// like ggml-org/gemma-3-4b-it-GGUF, which whatscli runs itself; off if empty
+	AltTextModel       string
+	UseTerminalBell    bool
+	BacklogMsgQuantity int
 	// typing :name: gives emoji, with suggestions
 	EmojiShortcodes bool
 	// sending a message to a chat marks it as read
@@ -80,9 +83,11 @@ type Colors struct {
 	CommandText       string
 	UnreadCount       string
 	Mention           string
-	ReadMarker        string
-	Positive          string
-	Negative          string
+	// the label of images and other media, like [IMAGE: a dog]
+	MediaLabel string
+	ReadMarker string
+	Positive   string
+	Negative   string
 }
 
 var Config = IniFile{
@@ -139,6 +144,7 @@ var Config = IniFile{
 		CommandText:       "blue",
 		UnreadCount:       "yellow",
 		Mention:           "dodgerblue",
+		MediaLabel:        "teal",
 		ReadMarker:        "deepskyblue",
 		Positive:          "green",
 		Negative:          "red",

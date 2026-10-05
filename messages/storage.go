@@ -363,6 +363,9 @@ func (md *MessageDatabase) AddMessage(msg Message, markUnread bool) bool {
 		if existing.ReplyTo == nil && msg.ReplyTo != nil {
 			existing.ReplyTo = msg.ReplyTo
 		}
+		if existing.AltText == "" {
+			existing.AltText = msg.AltText
+		}
 		existing.Status = max(existing.Status, msg.Status)
 		wasUnread := existing.Unread
 		existing.Unread = existing.Unread || (markUnread && !md.readOnOtherDeviceLocked(existing))
@@ -707,6 +710,22 @@ func (md *MessageDatabase) SetReceipt(id, member string, got MessageStatus, stat
 	md.replaceMessageLocked(msg)
 	md.scheduleSave()
 	return updated, true
+}
+
+// SetAltText sets the description of an image or sticker, and returns its chat
+// and whether the message is loaded.
+func (md *MessageDatabase) SetAltText(id, text string) (string, bool) {
+	md.messageLock.Lock()
+	defer md.messageLock.Unlock()
+	msg, ok := md.messagesById[id]
+	if !ok {
+		return "", false
+	}
+	msg.AltText = text
+	md.messagesById[id] = msg
+	md.replaceMessageLocked(msg)
+	md.scheduleSave()
+	return msg.ChatId, true
 }
 
 // pendingReaction is a reaction to a message that is not loaded yet

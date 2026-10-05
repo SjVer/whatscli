@@ -57,3 +57,35 @@ func TestReplyContextRefersToTheMessage(t *testing.T) {
 		t.Errorf("unexpected context %v", ctx)
 	}
 }
+
+func TestStickersAreShown(t *testing.T) {
+	sm := newTestSession(&recordingUi{})
+	alice := types.NewJID("111", types.DefaultUserServer)
+	for id, animated := range map[string]bool{"s1": false, "s2": true} {
+		sm.eventHandler.Handle(&events.Message{
+			Info:    types.MessageInfo{MessageSource: types.MessageSource{Chat: alice, Sender: alice}, ID: id, Timestamp: time.Now()},
+			Message: &waProto.Message{StickerMessage: &waProto.StickerMessage{Mimetype: proto.String("image/webp"), IsAnimated: proto.Bool(animated)}},
+		})
+	}
+	for id, expected := range map[string]string{"s1": "[STICKER]", "s2": "[ANIMATED STICKER]"} {
+		msg, ok := sm.db.GetMessage(id)
+		if !ok || msg.Kind != MessageKindSticker || msg.Text != expected {
+			t.Errorf("%s: expected %q, got %+v", id, expected, msg)
+		}
+		if _, err := downloadableFromMessage(msg); err != nil {
+			t.Errorf("%s: expected the sticker to be downloadable: %v", id, err)
+		}
+	}
+}
+
+func TestTheLabelOfAStickerIsItsAltText(t *testing.T) {
+	sm := newTestSession(&recordingUi{})
+	alice := types.NewJID("111", types.DefaultUserServer)
+	sm.eventHandler.Handle(&events.Message{
+		Info:    types.MessageInfo{MessageSource: types.MessageSource{Chat: alice, Sender: alice}, ID: "s1", Timestamp: time.Now()},
+		Message: &waProto.Message{StickerMessage: &waProto.StickerMessage{AccessibilityLabel: proto.String(" a laughing cat ")}},
+	})
+	if msg, _ := sm.db.GetMessage("s1"); msg.AltText != "a laughing cat" {
+		t.Errorf("expected the label as the alt text, got %q", msg.AltText)
+	}
+}

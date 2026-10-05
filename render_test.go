@@ -429,3 +429,25 @@ func TestAMessageThatArrivesLooksLikeTheOthers(t *testing.T) {
 		}
 	}
 }
+
+func TestMediaLabelsHaveTheirOwnColor(t *testing.T) {
+	msg := messages.Message{Id: "1", ContactShort: "Bob", Timestamp: 1000, Kind: messages.MessageKindImage,
+		Text: "[IMAGE] look", AltText: "a dog"}
+	screen := drawText(t, getTextMessageString(&msg, nil, 0))
+	color := tcell.ColorNames[config.Config.Colors.MediaLabel]
+	if fg, _, _ := styleAt(screen, 0, 1).Decompose(); fg != color {
+		t.Errorf("expected the label in its color, got %v", fg)
+	}
+	// "[IMAGE: a dog] look": the caption after it is shown like other text
+	if fg, _, _ := styleAt(screen, 15, 1).Decompose(); fg == color {
+		t.Error("expected the caption not to be in the label color")
+	}
+	text := ""
+	for x := 0; x < 19; x++ {
+		r, _, _, _ := screen.GetContent(x, 1)
+		text += string(r)
+	}
+	if text != "[IMAGE: a dog] look" {
+		t.Errorf("unexpected text %q", text)
+	}
+}

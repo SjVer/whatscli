@@ -53,6 +53,7 @@ const (
 	MessageKindVideo    MessageKind = "video"
 	MessageKindAudio    MessageKind = "audio"
 	MessageKindDocument MessageKind = "document"
+	MessageKindSticker  MessageKind = "sticker"
 	MessageKindUnknown  MessageKind = "unknown"
 )
 
@@ -75,6 +76,8 @@ type Message struct {
 	Unread       bool
 	// the mentions in Text as they are shown, like @Alice, see showMentions
 	Mentions []string `json:",omitempty"`
+	// a short description of an image or sticker by a local model, see describeChat
+	AltText string `json:",omitempty"`
 	// the message this one replies to, see replyOf
 	ReplyTo *Reply `json:",omitempty"`
 	// for the user's messages: how far it got, at least StatusSent, which only

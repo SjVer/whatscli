@@ -816,6 +816,7 @@ func PrintHelp() {
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageReact, "[::-] = React to message, type the emoji after "+config.Config.General.CmdPrefix+"react")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageReply, "[::-] = Reply to message, type the reply in the input")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.MessageInfo, "[::-] = Info about message, including who reacted")
+	fmt.Fprintln(textView, " Images and stickers get alt texts by a local model, see alt_text_model in the README")
 	fmt.Fprintln(textView, "")
 	fmt.Fprintln(textView, "[-::-]Chat list[-::-]")
 	fmt.Fprintln(textView, "[::b]", config.Config.Keymap.ChatArchive, "[::-] = Archive or unarchive the selected chat, also on your phone")
@@ -1224,6 +1225,17 @@ func formatMessageTime(sent time.Time, now time.Time) string {
 	}
 }
 
+// formatText returns the text of a message as it is shown, with the label of
+// media, like [IMAGE: a dog], in its own color, apart from the caption
+func formatText(msg *messages.Message) string {
+	text := messages.WithAltText(msg.Text, msg.AltText)
+	label, rest := messages.SplitLabel(text)
+	if msg.Kind == messages.MessageKindText || label == "" {
+		return formatMarkup(text, messageSearch, msg.Mentions)
+	}
+	return "[" + config.Config.Colors.MediaLabel + "]" + highlightSearch(label, messageSearch) + "[-]" + formatMarkup(rest, messageSearch, msg.Mentions)
+}
+
 // getTextMessageString returns a message as it is shown, in a region with its
 // ID, with the time and name when it doesn't continue the group of prev. The ticks of the user's messages are placed for the width of the message
 // panel, none for 0, see withTicks.
@@ -1231,7 +1243,7 @@ func getTextMessageString(msg *messages.Message, prev *messages.Message, width i
 	colorMe := config.Config.Colors.ChatMe
 	colorContact := config.Config.Colors.ChatContact
 	out := ""
-	text := formatMarkup(msg.Text, messageSearch, msg.Mentions)
+	text := formatText(msg)
 	if msg.Forwarded {
 		text = "[" + config.Config.Colors.ForwardedText + "]" + text + "[-]"
 	}
@@ -1317,8 +1329,44 @@ func showNewMessage(msg messages.Message) {
 	curRegions = append(curRegions, msg)
 }
 
-func (u UiHandler) NewScreen(msgs []messages.Message) {
+// latestUpdate queues an update of the UI with a value, like the chat list,
+// which can change many times a second, e.g. while receiving messages: it is
+// only shown once for the changes until it is drawn, with the newest value.
+type latestUpdate[T any] struct {
+	lock   sync.Mutex
+	value  T
+	queued bool
+}
+
+// queue shows value with show, on the goroutine of the UI
+func (update *latestUpdate[T]) queue(value T, show func(T)) {
+	update.lock.Lock()
+	update.value = value
+	queued := update.queued
+	update.queued = true
+	update.lock.Unlock()
+	if queued {
+		return
+	}
 	go app.QueueUpdateDraw(func() {
+		update.lock.Lock()
+		value := update.value
+		update.queued = false
+		update.lock.Unlock()
+		show(value)
+	})
+}
+
+// the messages and chat list to show next, see NewScreen and SetChats
+var (
+	screenUpdate latestUpdate[[]messages.Message]
+	chatsUpdate  latestUpdate[[]messages.Chat]
+)
+
+// NewScreen shows the messages of the open chat again, e.g. with the receipts
+// in a group, see latestUpdate
+func (u UiHandler) NewScreen(msgs []messages.Message) {
+	screenUpdate.queue(msgs, func(msgs []messages.Message) {
 		// queued before another chat was opened
 		if len(msgs) > 0 && msgs[0].ChatId != currentReceiver.Id {
 			return
@@ -1438,9 +1486,9 @@ func Search(text string) {
 	}
 }
 
-// messageMatches returns whether the text of a message contains the search, ignoring case
+// messageMatches returns whether the text of a message, with its alt text, contains the search, ignoring case
 func messageMatches(msg messages.Message, search string) bool {
-	return search == "" || strings.Contains(strings.ToLower(msg.Text), strings.ToLower(search))
+	return search == "" || strings.Contains(strings.ToLower(messages.WithAltText(msg.Text, msg.AltText)), strings.ToLower(search))
 }
 
 // chatMatches returns whether the name or number of a chat contains the search, ignoring case
@@ -1473,30 +1521,10 @@ func highlightSearch(text string, search string) string {
 	return out + tview.Escape(text[last:])
 }
 
-// the chat list to show next, see SetChats
-var pendingChats struct {
-	lock   sync.Mutex
-	chats  []messages.Chat
-	queued bool
-}
-
-// loads the chat data from storage to the TreeView. The list can change many
-// times a second, e.g. while receiving messages, and is only drawn once for
-// the changes until it is drawn, with the newest list.
-func (u UiHandler) SetChats(ids []messages.Chat) {
-	pendingChats.lock.Lock()
-	pendingChats.chats = ids
-	queued := pendingChats.queued
-	pendingChats.queued = true
-	pendingChats.lock.Unlock()
-	if queued {
-		return
-	}
-	go app.QueueUpdateDraw(func() {
-		pendingChats.lock.Lock()
-		allChats = pendingChats.chats
-		pendingChats.queued = false
-		pendingChats.lock.Unlock()
+// SetChats shows the chat list again, see latestUpdate
+func (u UiHandler) SetChats(chats []messages.Chat) {
+	chatsUpdate.queue(chats, func(chats []messages.Chat) {
+		allChats = chats
 		// renderChats updates currentReceiver with the chat from the new list
 		reactions := currentReceiver.UnreadReactions
 		renderChats()
@@ -1677,9 +1705,9 @@ func (u UiHandler) PrintText(msg string) {
 	PrintText(msg)
 }
 
-// OpenFile opens a file or URL with its default app
+// OpenFile opens a file or URL with its default app, without waiting for it
 func (u UiHandler) OpenFile(target string) {
-	if err := open.Run(target); err != nil {
+	if err := open.Start(target); err != nil {
 		PrintErrorMsg("failed to open "+target+":", err)
 	}
 }

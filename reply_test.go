@@ -10,6 +10,8 @@ import (
 )
 
 func TestReplyIsShownAboveTheMessage(t *testing.T) {
+	defer func(msgs []messages.Message) { chatMessages = msgs }(chatMessages)
+	chatMessages = nil // the replied message isn't loaded
 	msg := messages.Message{Id: "2", ContactShort: "Alice", Timestamp: 1000, Text: "yes!",
 		ReplyTo: &messages.Reply{Id: "1", Name: "Bob", Text: "dinner at 7?\nor later"}}
 	screen := drawText(t, getTextMessageString(&msg, nil, 0))
@@ -62,5 +64,18 @@ func TestReplyingToASelectedMessage(t *testing.T) {
 	typeKeys(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
 	if replyTarget != "" || strings.Contains(textView.GetText(true), "Replying") {
 		t.Error("expected Escape to cancel the reply")
+	}
+}
+
+func TestRepliesToImagesShowTheirAltText(t *testing.T) {
+	defer func(msgs []messages.Message) { chatMessages = msgs }(chatMessages)
+	chatMessages = []messages.Message{{Id: "img", Text: "[IMAGE] look", AltText: "a dog on a beach", Kind: messages.MessageKindImage}}
+	line := replyLine(&messages.Reply{Id: "img", Name: "Bob", Text: "[IMAGE] look"})
+	if !strings.Contains(line, "Bob:[::-] [IMAGE: a dog on a beach[] look") {
+		t.Errorf("expected the alt text in the reply, got %q", line)
+	}
+	// a message that isn't loaded shows as it was quoted
+	if line := replyLine(&messages.Reply{Id: "old", Name: "Bob", Text: "[IMAGE]"}); !strings.Contains(line, "[IMAGE[]") {
+		t.Errorf("expected the quoted text, got %q", line)
 	}
 }

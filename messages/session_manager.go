@@ -92,6 +92,9 @@ type SessionManager struct {
 	offlineMessages atomic.Int64
 	// pictures of chats shown on notifications
 	pictures chatPictures
+	// the model that describes images, and the messages waiting for it, see describeChat
+	altServer altServer
+	altTexts  altTexts
 	// members of groups who can be mentioned
 	members groupMembers
 	// whether the QR code is shown, and whatscli can be linked, see LinkWithCode
@@ -125,6 +128,7 @@ func (sm *SessionManager) Close() {
 	if sm.client != nil {
 		sm.client.Disconnect()
 	}
+	sm.stopServer()
 	sm.db.saveChats()
 }
 
@@ -218,6 +222,7 @@ func (sm *SessionManager) setCurrentReceiver(id string) {
 	if id != "" {
 		sm.loadChatOnce(id)
 		sm.GroupMembers(id) // to suggest them for mentions
+		sm.describeChat(id)
 	}
 }
 
@@ -744,10 +749,9 @@ func (sm *SessionManager) execCommand(command Command) {
 		} else {
 			sm.printCommandUsage("info", "[message-id[]")
 		}
-	case "download":
-		sm.downloadCommand(command.Params, false)
-	case "open":
-		sm.downloadCommand(command.Params, true)
+	case "download", "open":
+		// downloads can take a while, the other commands don't wait for them
+		go sm.downloadCommand(command.Params, command.Name == "open")
 	case "url":
 		sm.openMessageURL(command.Params)
 	case "upload":
@@ -1672,6 +1676,7 @@ func (sm *SessionManager) seesChat(chatID string) bool {
 func (sm *SessionManager) showIfOpen(chatID string) {
 	if chatID != "" && chatID == sm.openChat() {
 		sm.uiHandler.NewScreen(sm.getMessages(chatID))
+		sm.describeChat(chatID) // e.g. images loaded from the phone
 	}
 }
 
@@ -1720,6 +1725,9 @@ func (eh *eventHandler) handleLiveMessage(evt *events.Message) {
 
 	markUnread := !msg.FromMe && !eh.sm.seesChat(msg.ChatId)
 	isNew := eh.sm.db.AddMessage(msg, markUnread)
+	if msg.ChatId == eh.sm.openChat() {
+		eh.sm.describeChat(msg.ChatId)
+	}
 	if stored, ok := eh.sm.db.GetMessage(msg.Id); ok {
 		// it may have been read on the phone already
 		markUnread = markUnread && stored.Unread
@@ -1861,9 +1869,13 @@ func (eh *eventHandler) handleHistorySync(evt *events.HistorySync) {
 	}
 
 	if learnedNames {
-		// of people who aren't in the contacts
-		eh.sm.addContactChats()
-		eh.sm.refreshContactNames()
+		// of people who aren't in the contacts, which takes a moment, so beside
+		// the events that keep arriving
+		go func() {
+			eh.sm.addContactChats()
+			eh.sm.refreshContactNames()
+			eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
+		}()
 	}
 	eh.sm.uiHandler.SetChats(eh.sm.db.GetChatIds())
 	eh.sm.showIfOpen(eh.sm.openChat())
@@ -1964,6 +1976,16 @@ func (eh *eventHandler) messageFromInfo(info types.MessageInfo, raw *waProto.Mes
 		msg.MimeType = doc.GetMimetype()
 		msg.FileName = doc.GetFileName()
 		msg.Text = mediaDisplayText(MessageKindDocument, doc.GetFileName(), doc.GetCaption())
+	case raw.GetStickerMessage() != nil:
+		sticker := raw.GetStickerMessage()
+		msg.Kind = MessageKindSticker
+		msg.MimeType = sticker.GetMimetype()
+		msg.Text = mediaDisplayText(MessageKindSticker, "", "")
+		if sticker.GetIsAnimated() {
+			msg.Text = "[ANIMATED STICKER]"
+		}
+		// the description of its maker is used instead of one by the model, see describeChat
+		msg.AltText = strings.TrimSpace(sticker.GetAccessibilityLabel())
 	default:
 		return Message{}, false
 	}
@@ -2107,6 +2129,10 @@ func downloadableFromMessage(msg Message) (whatsmeow.DownloadableMessage, error)
 		if media := msg.RawMessage.GetDocumentMessage(); media != nil {
 			return media, nil
 		}
+	case MessageKindSticker:
+		if media := msg.RawMessage.GetStickerMessage(); media != nil {
+			return media, nil
+		}
 	}
 	return nil, errors.New("This is not a downloadable message")
 }
@@ -2218,6 +2244,8 @@ func mediaDisplayText(kind MessageKind, fileName, caption string) string {
 		label = "[AUDIO]"
 	case MessageKindDocument:
 		label = "[DOCUMENT]"
+	case MessageKindSticker:
+		label = "[STICKER]"
 	}
 	parts := []string{label}
 	if fileName != "" && kind == MessageKindDocument {

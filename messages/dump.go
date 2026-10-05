@@ -81,6 +81,12 @@ func (sm *SessionManager) DumpChat(w io.Writer, chatID string) {
 		}
 		fmt.Fprintf(w, "members to mention: %s\n", strings.Join(names, ", "))
 	}
+	// the alt texts of its images, which are made in the background
+	sm.describeChat(chatID)
+	for start := time.Now(); sm.altTextPending(chatID) && time.Since(start) < 10*time.Minute; {
+		time.Sleep(time.Second)
+	}
+	msgs = sm.db.GetMessages(chatID)
 	for _, msg := range msgs {
 		sender := msg.ContactShort
 		if msg.FromMe {
@@ -92,7 +98,7 @@ func (sm *SessionManager) DumpChat(w io.Writer, chatID string) {
 		if msg.FromMe && msg.Status != StatusUnknown {
 			sender += " (" + msg.Status.String() + ")"
 		}
-		fmt.Fprintf(w, "%s %s: %s\n", formatTimestamp(int64(msg.Timestamp)), sender, strings.ReplaceAll(msg.Text, "\n", " "))
+		fmt.Fprintf(w, "%s %s: %s\n", formatTimestamp(int64(msg.Timestamp)), sender, strings.ReplaceAll(WithAltText(msg.Text, msg.AltText), "\n", " "))
 		if len(msg.Reactions) > 0 {
 			fmt.Fprintf(w, "  reactions: %s\n", strings.Join(sm.namedReactions(msg), ", "))
 		}

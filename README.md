@@ -82,6 +82,16 @@ When pressing `Ctrl-w` (default mapping) you enter "message selection mode" whic
 
 Some commands such as the `/add` and `/remove` require a "user id" as their input. You can copy the user ID of a selected chat or a selected message to the clipboard with `Ctrl-c` (default mapping) and easily append them to the current input using `Ctrl-v`.
 
+### Alt texts for images
+
+whatscli can describe the images and stickers of the chat you open in a few words, like `[IMAGE: a dog running on a beach]`, with a vision model that runs on your own computer. Add one line to the `[general]` section of `whatscli.config`:
+
+```
+alt_text_model = ggml-org/gemma-3-4b-it-GGUF
+```
+
+whatscli downloads [llama.cpp](https://github.com/ggml-org/llama.cpp) and the model the first time (about 3 GB for this one) next to the config, and runs it while whatscli runs. On a computer without a good graphics card, `ggml-org/SmolVLM-500M-Instruct-GGUF` is much smaller. The media of older messages expire on the WhatsApp server, so mostly recent images get an alt text.
+
 ### Notifications
 
 The app supports basic desktop notifications through the `gen2brain/beeep` library, to enable it set `enable_notifications = true` in `whatscli.config`. Set `use_terminal_bell = true` to ring your terminal's bell instead of sending a desktop notification.

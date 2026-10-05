@@ -30,7 +30,18 @@ func excerpt(text string, length int) string {
 
 // replyLine returns the line above a reply that shows what it replies to
 func replyLine(reply *messages.Reply) string {
-	return "[gray::-]↱ [::b]" + nameText(reply.SenderId, reply.Name) + ":[::-] " + tview.Escape(excerpt(reply.Text, 50)) + "[-::-]\n"
+	return "[gray::-]↱ [::b]" + nameText(reply.SenderId, reply.Name) + ":[::-] " + tview.Escape(excerpt(repliedText(reply), 60)) + "[-::-]\n"
+}
+
+// repliedText returns the text of the message a reply replies to, with the alt
+// text of an image, which it got when it was described, see messages.WithAltText
+func repliedText(reply *messages.Reply) string {
+	for _, msg := range chatMessages {
+		if msg.Id == reply.Id {
+			return messages.WithAltText(msg.Text, msg.AltText)
+		}
+	}
+	return reply.Text
 }
 
 // starts a reply to the selected message, which is typed in the input
