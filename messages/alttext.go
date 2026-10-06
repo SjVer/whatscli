@@ -17,8 +17,8 @@ import (
 	"golang.org/x/image/webp"
 )
 
-// Alt texts: when a model is configured, see AltTextModel, the images and
-// stickers of the open chat are described in a few words by it, one at a
+// Alt texts: when a model is configured, see AltTextModel, the images, stickers
+// and videos of the open chat are described in a few words by it, one at a
 // time, see describeChat. The description is saved with the message.
 
 // altTextNotice is the key of the notices about the model, on the main screen
@@ -46,7 +46,7 @@ func (sm *SessionManager) describeChat(chatID string) {
 	sm.altTexts.lock.Lock()
 	defer sm.altTexts.lock.Unlock()
 	for _, msg := range sm.db.GetMessages(chatID) {
-		if (msg.Kind != MessageKindImage && msg.Kind != MessageKindSticker) || msg.AltText != "" ||
+		if (msg.Kind != MessageKindImage && msg.Kind != MessageKindSticker && msg.Kind != MessageKindVideo) || msg.AltText != "" ||
 			sm.altTexts.pending[msg.Id] || sm.altTexts.failed[msg.Id] {
 			continue
 		}
@@ -114,9 +114,20 @@ func (sm *SessionManager) describeMessage(id string) (string, error) {
 	}
 	mimeType := msg.MimeType
 	data, err := client.Download(context.Background(), downloadable)
-	if err == nil && msg.Kind == MessageKindSticker {
-		data, err = stickerAsPNG(data)
-		mimeType = "image/png"
+	if err == nil && msg.Kind == MessageKindVideo {
+		var text string
+		if text, err = sm.describeVideo(url, msg, data); err == nil {
+			return text, nil
+		}
+	} else if err == nil && msg.Kind == MessageKindSticker {
+		var still []byte
+		if still, err = stickerAsPNG(data); err == nil {
+			data, mimeType = still, "image/png"
+		} else if text, animatedErr := sm.describeAnimatedSticker(url, msg, data); animatedErr == nil {
+			return text, nil
+		} else {
+			err = fmt.Errorf("%v, and as an animated sticker: %v", err, animatedErr)
+		}
 	}
 	if err != nil {
 		// e.g. older media, which expire on the server, or animated stickers,
@@ -128,12 +139,56 @@ func (sm *SessionManager) describeMessage(id string) (string, error) {
 		sm.logDebug("Describing message %s by its preview: %v", id, err)
 		data, mimeType = thumbnail, thumbnailType
 	}
-	return askAltText(url, mimeType, data)
+	return askAltText(url, altTextPrompt, mimeType, data)
+}
+
+// describeVideo asks the model for the alt text of a video from its frames
+func (sm *SessionManager) describeVideo(url string, msg Message, video []byte) (string, error) {
+	ffmpeg, err := sm.ensureFFmpeg()
+	if err != nil {
+		return "", err
+	}
+	seconds := int(msg.RawMessage.GetVideoMessage().GetSeconds())
+	if seconds <= 0 {
+		seconds = 8 // not known, 4 frames
+	}
+	times := frameTimes(float64(seconds))
+	frames, err := videoFrames(ffmpeg, video, times)
+	if err != nil {
+		return "", err
+	}
+	sm.logDebug("Describing video %s of %d seconds by %d frames", msg.Id, seconds, len(frames))
+	return askAltText(url, framesPrompt("a video", float64(seconds), times), "image/jpeg", frames...)
+}
+
+// describeAnimatedSticker asks the model for the alt text of an animated
+// sticker from its frames
+func (sm *SessionManager) describeAnimatedSticker(url string, msg Message, sticker []byte) (string, error) {
+	var times []float64
+	pictures, length, err := webpFrames(sticker, func(length float64) []float64 {
+		times = frameTimes(length)
+		return times
+	})
+	if err != nil {
+		return "", err
+	}
+	frames := make([][]byte, len(pictures))
+	for i, picture := range pictures {
+		var out bytes.Buffer
+		if err = png.Encode(&out, picture); err != nil {
+			return "", err
+		}
+		frames[i] = out.Bytes()
+	}
+	sm.logDebug("Describing animated sticker %s of %.1f seconds by %d frames", msg.Id, length, len(frames))
+	return askAltText(url, framesPrompt("an animated sticker", length, times[:len(frames)]), "image/png", frames...)
 }
 
 // thumbnailOf returns the small preview in an image or sticker message, and its type
 func thumbnailOf(msg Message) ([]byte, string) {
 	if thumbnail := msg.RawMessage.GetImageMessage().GetJPEGThumbnail(); len(thumbnail) > 0 {
+		return thumbnail, "image/jpeg"
+	} else if thumbnail = msg.RawMessage.GetVideoMessage().GetJPEGThumbnail(); len(thumbnail) > 0 {
 		return thumbnail, "image/jpeg"
 	}
 	return msg.RawMessage.GetStickerMessage().GetPngThumbnail(), "image/png"
@@ -151,18 +206,18 @@ func stickerAsPNG(data []byte) ([]byte, error) {
 	return out.Bytes(), err
 }
 
-// askAltText asks the model at url for the alt text of an image, the way the
-// OpenAI chat API is asked, which llama-server answers like
-func askAltText(url, mimeType string, data []byte) (string, error) {
+// askAltText asks the model at url for the alt text of images, like the
+// frames of a video, the way the OpenAI chat API is asked, which llama-server
+// answers like
+func askAltText(url, prompt, mimeType string, images ...[]byte) (string, error) {
+	content := []map[string]any{{"type": "text", "text": prompt}}
+	for _, data := range images {
+		content = append(content, map[string]any{"type": "image_url",
+			"image_url": map[string]string{"url": "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)}})
+	}
 	request, _ := json.Marshal(map[string]any{
 		"max_tokens": 40,
-		"messages": []map[string]any{{
-			"role": "user",
-			"content": []map[string]any{
-				{"type": "text", "text": altTextPrompt},
-				{"type": "image_url", "image_url": map[string]string{"url": "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)}},
-			},
-		}},
+		"messages":   []map[string]any{{"role": "user", "content": content}},
 	})
 	client := http.Client{Timeout: 2 * time.Minute}
 	resp, err := client.Post(url+"/v1/chat/completions", "application/json", bytes.NewReader(request))

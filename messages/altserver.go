@@ -107,7 +107,7 @@ func (sm *SessionManager) startServer() (string, error) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	listener.Close()
 
-	cmd := exec.Command(binary, "-hf", config.Config.General.AltTextModel, "--host", "127.0.0.1", "--port", fmt.Sprint(port), "-c", "4096")
+	cmd := exec.Command(binary, "-hf", config.Config.General.AltTextModel, "--host", "127.0.0.1", "--port", fmt.Sprint(port), "-c", "8192")
 	cmd.Env = append(os.Environ(), "LLAMA_CACHE="+filepath.Join(dir, "models"))
 	output, _ := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
@@ -166,21 +166,27 @@ func (sm *SessionManager) stopServer() {
 // downloadServer downloads and unpacks llama.cpp into dir if it isn't there,
 // and returns the path of llama-server
 func downloadServer(dir string) (string, error) {
-	if binary := findServer(dir); binary != "" {
-		return binary, nil
-	}
 	archive := llamaArchive(runtime.GOOS, runtime.GOARCH)
-	if archive == "" {
+	if archive == "" && findBinary(dir, "llama-server") == "" {
 		return "", fmt.Errorf("llama.cpp has no release for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
+	return downloadTool(dir, "https://github.com/ggml-org/llama.cpp/releases/download/"+llamaBuild+"/"+archive, "llama-server")
+}
+
+// downloadTool downloads and unpacks the zip or tar.gz archive at url into dir
+// if it isn't there, and returns the path of the program name in it
+func downloadTool(dir, url, name string) (string, error) {
+	if binary := findBinary(dir, name); binary != "" {
+		return binary, nil
+	}
 	download := http.Client{Timeout: 30 * time.Minute}
-	resp, err := download.Get("https://github.com/ggml-org/llama.cpp/releases/download/" + llamaBuild + "/" + archive)
+	resp, err := download.Get(url)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("downloading llama.cpp failed: %s", resp.Status)
+		return "", fmt.Errorf("downloading %s failed: %s", name, resp.Status)
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -189,22 +195,21 @@ func downloadServer(dir string) (string, error) {
 	// unpacked next to it first, so that an unpack that was cut off isn't used
 	tmp := dir + ".tmp"
 	os.RemoveAll(tmp)
-	if err = unpack(data, strings.HasSuffix(archive, ".zip"), tmp); err != nil {
+	if err = unpack(data, strings.HasSuffix(url, ".zip"), tmp); err != nil {
 		os.RemoveAll(tmp)
 		return "", err
 	}
 	if err = os.Rename(tmp, dir); err != nil {
 		return "", err
 	}
-	if binary := findServer(dir); binary != "" {
+	if binary := findBinary(dir, name); binary != "" {
 		return binary, nil
 	}
-	return "", errors.New("llama-server isn't in the llama.cpp release")
+	return "", fmt.Errorf("%s isn't in the downloaded archive", name)
 }
 
-// findServer returns the path of llama-server in dir, or ""
-func findServer(dir string) string {
-	name := "llama-server"
+// findBinary returns the path of the program name in dir, or ""
+func findBinary(dir, name string) string {
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}

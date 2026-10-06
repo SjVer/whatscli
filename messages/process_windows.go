@@ -14,10 +14,16 @@ import (
 // whatscli is killed, as the job is closed then
 var serverJob windows.Handle
 
+// hideWindow runs a program without the console of whatscli, and without a
+// window of its own
+func hideWindow(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+}
+
 // startServerProcess starts llama-server without the console of whatscli,
 // which the terminal would keep waiting for, and ends it with whatscli
 func startServerProcess(cmd *exec.Cmd) error {
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+	hideWindow(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
 	}

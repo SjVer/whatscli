@@ -68,6 +68,7 @@ type SessionManager struct {
 	// the model that describes images, and the messages waiting for it, see describeChat
 	altServer altServer
 	altTexts  altTexts
+	ffmpeg    ffmpegTool
 	// members of groups who can be mentioned
 	members groupMembers
 	// whether the QR code is shown, and whatscli can be linked, see LinkWithCode

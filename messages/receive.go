@@ -325,6 +325,10 @@ func (eh *eventHandler) messageFromInfo(info types.MessageInfo, raw *waProto.Mes
 		msg.Kind = MessageKindVideo
 		msg.MimeType = video.GetMimetype()
 		msg.Text = mediaDisplayText(MessageKindVideo, "", video.GetCaption())
+		if video.GetGifPlayback() {
+			// sent as a short video without sound
+			msg.Text = "[GIF]" + strings.TrimPrefix(msg.Text, "[VIDEO]")
+		}
 	case raw.GetAudioMessage() != nil:
 		msg.Kind = MessageKindAudio
 		msg.MimeType = raw.GetAudioMessage().GetMimetype()

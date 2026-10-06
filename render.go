@@ -193,6 +193,10 @@ func formatText(msg *messages.Message) string {
 	if msg.Kind == messages.MessageKindText || label == "" {
 		return formatMarkup(text, messageSearch, msg.Mentions)
 	}
+	// the caption of an image or video on its own line, the name of a document after the label
+	if caption := strings.TrimPrefix(rest, " "); caption != "" && msg.Kind != messages.MessageKindDocument {
+		rest = "\n" + caption
+	}
 	return "[" + config.Config.Colors.MediaLabel + "]" + highlightSearch(label, messageSearch) + "[-]" + formatMarkup(rest, messageSearch, msg.Mentions)
 }
 

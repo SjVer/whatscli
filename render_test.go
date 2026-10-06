@@ -448,6 +448,14 @@ func TestAMessageThatArrivesLooksLikeTheOthers(t *testing.T) {
 
 func TestMediaLabelsHaveTheirOwnColor(t *testing.T) {
 	withUI(t)
+	row := func(screen tcell.SimulationScreen, y int) string {
+		text := ""
+		for x := 0; x < 40; x++ {
+			r, _, _, _ := screen.GetContent(x, y)
+			text += string(r)
+		}
+		return strings.TrimSpace(text)
+	}
 	msg := messages.Message{Id: "1", ContactShort: "Bob", Timestamp: 1000, Kind: messages.MessageKindImage,
 		Text: "[IMAGE] look", AltText: "a dog"}
 	screen := drawText(t, getTextMessageString(&msg, nil, 0))
@@ -455,17 +463,17 @@ func TestMediaLabelsHaveTheirOwnColor(t *testing.T) {
 	if fg, _, _ := styleAt(screen, 0, 1).Decompose(); fg != color {
 		t.Errorf("expected the label in its color, got %v", fg)
 	}
-	// "[IMAGE: a dog] look": the caption after it is shown like other text
-	if fg, _, _ := styleAt(screen, 15, 1).Decompose(); fg == color {
+	// the caption on its own line, shown like other text
+	if row(screen, 1) != "[IMAGE: a dog]" || row(screen, 2) != "look" {
+		t.Errorf("expected the caption below the label, got %q and %q", row(screen, 1), row(screen, 2))
+	}
+	if fg, _, _ := styleAt(screen, 0, 2).Decompose(); fg == color {
 		t.Error("expected the caption not to be in the label color")
 	}
-	text := ""
-	for x := 0; x < 19; x++ {
-		r, _, _, _ := screen.GetContent(x, 1)
-		text += string(r)
-	}
-	if text != "[IMAGE: a dog] look" {
-		t.Errorf("unexpected text %q", text)
+	// the name of a document stays next to its label
+	document := messages.Message{Id: "2", ContactShort: "Bob", Timestamp: 1000, Kind: messages.MessageKindDocument, Text: "[DOCUMENT] notes.pdf"}
+	if screen = drawText(t, getTextMessageString(&document, nil, 0)); row(screen, 1) != "[DOCUMENT] notes.pdf" {
+		t.Errorf("expected the document name after the label, got %q", row(screen, 1))
 	}
 }
 

@@ -78,7 +78,7 @@ func TestAskingTheModel(t *testing.T) {
 	}))
 	defer server.Close()
 
-	text, err := askAltText(server.URL, "image/jpeg", []byte("jpeg"))
+	text, err := askAltText(server.URL, altTextPrompt, "image/jpeg", []byte("jpeg"))
 	if err != nil || text != "A dog running on a beach" {
 		t.Fatalf("expected the cleaned up answer, got %q, %v", text, err)
 	}
