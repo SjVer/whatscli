@@ -1,3 +1,5 @@
+> **NOTICE:** This fork makes a lot of large additions and changes to normen/whatscli, almost entirely vibe-coded. Note that I am well aware of how concerning that would be if I intended to PR this or otherwise cared about the quality of the codebase. I do not. This is a utility I use myself, and you're welcome to use it too.
+
 # whatscli
 
 A command line interface for WhatsApp, based on [go-whatsmeow](https://github.com/tulir/whatsmeow) and [tview](https://github.com/rivo/tview)
