@@ -3,6 +3,8 @@ package messages
 import (
 	"sync"
 	"time"
+
+	"github.com/normen/whatscli/notify"
 )
 
 // connectionLostDelay is how long the connection must stay lost before that is
@@ -64,7 +66,7 @@ func (w *connectionWatch) connected() {
 	w.stopTimerLocked()
 	if w.notified {
 		w.notified = false
-		go sendNotification(appName, "Connected to WhatsApp again", "")
+		go sendNotification(notify.AppName, "Connected to WhatsApp again", "")
 	}
 }
 
@@ -79,6 +81,6 @@ func (w *connectionWatch) stopTimerLocked() {
 func (w *connectionWatch) notifyLocked(text string) {
 	if !w.notified {
 		w.notified = true
-		go sendNotification(appName, text, "")
+		go sendNotification(notify.AppName, text, "")
 	}
 }

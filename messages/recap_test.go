@@ -67,7 +67,7 @@ func fakeModel(t *testing.T, sm *SessionManager, answer string) *string {
 	model := config.Config.General.AiModel
 	config.Config.General.AiModel = "a/model"
 	t.Cleanup(func() { config.Config.General.AiModel = model })
-	sm.model.url = server.URL
+	sm.model.SetURL(server.URL)
 	return &prompt
 }
 

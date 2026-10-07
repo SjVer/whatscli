@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/normen/whatscli/ai"
 	"github.com/normen/whatscli/config"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
@@ -67,9 +68,9 @@ type SessionManager struct {
 	pictures chatPictures
 	// the AI model, see ensureModel, the messages waiting for alt texts by it,
 	// see describeChat, and ffmpeg, which takes the frames of videos for it
-	model    modelServer
+	model    ai.Server
 	altTexts altTexts
-	ffmpeg   ffmpegTool
+	ffmpeg   ai.FFmpeg
 	// members of groups who can be mentioned
 	members groupMembers
 	// whether the QR code is shown, and whatscli can be linked, see LinkWithCode
@@ -101,7 +102,7 @@ func (sm *SessionManager) Close() {
 	if client != nil {
 		client.Disconnect()
 	}
-	sm.stopModel()
+	sm.model.Stop()
 	sm.db.saveChats()
 }
 

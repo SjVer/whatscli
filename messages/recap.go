@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/normen/whatscli/ai"
 	"github.com/normen/whatscli/config"
 )
 
@@ -25,7 +26,7 @@ const (
 const recapCount = 50
 
 // the longest transcript sent to the model, so that it fits its context with
-// the answer, see startModel; the oldest messages are left out of longer ones
+// the answer, see ai.Server; the oldest messages are left out of longer ones
 const maxTranscript = 16000
 
 // maxAnswerTokens is how long a recap or answer may be
@@ -105,7 +106,7 @@ func (sm *SessionManager) askAboutChat(chatID, key string, msgs []Message, task 
 		sm.uiHandler.SetNotice(chatID, key, "")
 		return // the notice of the model tells why
 	}
-	answer, err := askModel(url, chatPrompt(time.Now(), msgs, task), maxAnswerTokens, "")
+	answer, err := ai.Ask(url, chatPrompt(time.Now(), msgs, task), maxAnswerTokens, "")
 	if answer = withoutPreamble(answer); err == nil && answer == "" {
 		err = errors.New("the model gave an empty answer")
 	}

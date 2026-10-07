@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/normen/whatscli/ai"
 	"github.com/normen/whatscli/config"
 	"golang.org/x/image/webp"
 )
@@ -145,8 +146,8 @@ func (sm *SessionManager) describeVideo(url string, msg Message, video []byte) (
 	if seconds <= 0 {
 		seconds = 8 // not known, 4 frames
 	}
-	times := frameTimes(float64(seconds))
-	frames, err := videoFrames(ffmpeg, video, times)
+	times := ai.FrameTimes(float64(seconds))
+	frames, err := ai.VideoFrames(ffmpeg, TempFolder(), video, times)
 	if err != nil {
 		return "", err
 	}
@@ -158,8 +159,8 @@ func (sm *SessionManager) describeVideo(url string, msg Message, video []byte) (
 // sticker from its frames
 func (sm *SessionManager) describeAnimatedSticker(url string, msg Message, sticker []byte) (string, error) {
 	var times []float64
-	pictures, length, err := webpFrames(sticker, func(length float64) []float64 {
-		times = frameTimes(length)
+	pictures, length, err := ai.WebPFrames(sticker, func(length float64) []float64 {
+		times = ai.FrameTimes(length)
 		return times
 	})
 	if err != nil {
@@ -202,7 +203,7 @@ func stickerAsPNG(data []byte) ([]byte, error) {
 // askAltText asks the model at url for the alt text of images, like the
 // frames of a video, which it gives without quotes and a period
 func askAltText(url, prompt, mimeType string, images ...[]byte) (string, error) {
-	text, err := askModel(url, prompt, 40, mimeType, images...)
+	text, err := ai.Ask(url, prompt, 40, mimeType, images...)
 	if err != nil {
 		return "", err
 	}
@@ -230,4 +231,16 @@ func SplitLabel(text string) (string, string) {
 		return text[:end+1], text[end+1:]
 	}
 	return "", text
+}
+
+// framesPrompt asks the model for the alt text of a video or an animated
+// sticker, the kind, from its frames
+func framesPrompt(kind string, length float64, times []float64) string {
+	at := make([]string, len(times))
+	for i, t := range times {
+		at[i] = fmt.Sprintf("%.1fs", t)
+	}
+	return fmt.Sprintf("These are %d frames, in order, from %s of %.0f seconds, at %s. "+
+		"Describe what happens in it for someone who can't see it, in at most 12 words, without a preamble.",
+		len(times), kind, length, strings.Join(at, ", "))
 }

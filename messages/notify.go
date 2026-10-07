@@ -4,16 +4,11 @@ import (
 	"fmt"
 
 	"github.com/normen/whatscli/config"
+	"github.com/normen/whatscli/notify"
 )
 
-// appName is the name of whatscli on its notifications
-const appName = "whatscli"
-
-// NotificationIcon is the PNG icon of the app on notifications, set by main
-var NotificationIcon []byte
-
-// sendNotification shows a notification, see notify
-var sendNotification = notify
+// sendNotification shows a notification, see showNotification
+var sendNotification = showNotification
 
 // notificationText returns the title and text of the notification for a new
 // message: messages in groups are titled with the group and name the sender
@@ -24,14 +19,14 @@ func notificationText(msg Message, chatName string) (string, string) {
 	return msg.ContactShort, msg.Text
 }
 
-// notify shows a desktop notification with an icon, the app's if empty, see
-// desktopNotify, or rings the terminal bell
-func notify(title, message, icon string) error {
+// showNotification shows a desktop notification with an icon, the app's if
+// empty, see notify.Desktop, or rings the terminal bell
+func showNotification(title, message, icon string) error {
 	if !config.Config.General.EnableNotifications {
 		return nil
 	} else if config.Config.General.UseTerminalBell {
 		_, err := fmt.Printf("\a")
 		return err
 	}
-	return desktopNotify(title, message, icon)
+	return notify.Desktop(title, message, icon)
 }

@@ -157,7 +157,13 @@ Using a recent version of go, building should be straightforward. Either use `go
 
 ### Structure Overview
 
-The UI is in the files of the main package, around a tview app running on the main routine that `main.go` sets up: `chatlist.go`, `render.go`, `input.go`, `keys.go` (the keymap, based on the tslocum/cbind library) and so on. It manages the selection of messages in the current chat as well as displaying the messages and chat list that the session manager sends.
+`main.go` reads the command line flags and starts the UI, or with `-dump` prints what whatscli knows instead (`dump.go`). The packages:
+
+- `ui`: the terminal UI, around a tview app running on the main routine, started by `ui.Run`: the chat list (`chatlist.go`), the messages (`render.go`), the input (`input.go`), the keymap (`keys.go`, based on the tslocum/cbind library) and so on. It manages the selection of messages in the current chat as well as displaying the messages and chat list that the session manager sends.
+- `messages`: the connection to WhatsApp and the saved chats, see below.
+- `ai`: the local AI model in llama-server, and ffmpeg and the animated WebP decoder that take the frames of videos and stickers for it.
+- `notify`: desktop notifications.
+- `config`: the settings, see below.
 
 The `messages/session_manager.go` (with the other files in `messages`, split by concern) runs a separate go routine to receive messages from the `go-whatsmeow` library which in turn runs the websocket connection to the WhatsApp server. The session manager receives the messages from `go-whatsmeow` and the commands from the UI via channels that it drains on its main routine. It then updates the UI accordingly using the `UiMessageHandler` interface. This ensures "thread safe" management of the connection and data while both UI and network connection run separately.
 

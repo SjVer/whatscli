@@ -21,14 +21,14 @@ type recordingUi struct {
 	notices   map[string]string
 }
 
-func (u *recordingUi) NewMessage(Message)               {}
-func (u *recordingUi) NewScreen(string, []Message)      {}
-func (u *recordingUi) PrintError(err error)             { u.errors = append(u.errors, err) }
-func (u *recordingUi) PrintText(text string)            { u.printed = append(u.printed, text) }
-func (u *recordingUi) SetStatus(SessionStatus)          {}
-func (u *recordingUi) OpenFile(string)                  {}
-func (u *recordingUi) CloseChat(string)                 {}
-func (u *recordingUi) GetWriter() io.Writer             { return io.Discard }
+func (u *recordingUi) NewMessage(Message)          {}
+func (u *recordingUi) NewScreen(string, []Message) {}
+func (u *recordingUi) PrintError(err error)        { u.errors = append(u.errors, err) }
+func (u *recordingUi) PrintText(text string)       { u.printed = append(u.printed, text) }
+func (u *recordingUi) SetStatus(SessionStatus)     {}
+func (u *recordingUi) OpenFile(string)             {}
+func (u *recordingUi) CloseChat(string)            {}
+func (u *recordingUi) GetWriter() io.Writer        { return io.Discard }
 func (u *recordingUi) SetNotice(chatID, key, text string) {
 	if u.notices == nil {
 		u.notices = map[string]string{}
