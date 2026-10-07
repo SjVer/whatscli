@@ -44,9 +44,9 @@ func (sm *SessionManager) ensureFFmpeg() (string, error) {
 	if runtime.GOOS != "windows" || configPath == "" {
 		sm.ffmpeg.err = errors.New("install ffmpeg for the alt texts of videos")
 	} else {
-		sm.uiHandler.SetNotice("", altTextNotice, "Downloading ffmpeg for the alt texts of videos...")
+		sm.uiHandler.SetNotice("", modelNotice, "Downloading ffmpeg for the alt texts of videos...")
 		sm.ffmpeg.path, sm.ffmpeg.err = downloadTool(filepath.Join(filepath.Dir(configPath), "llama", "ffmpeg"), ffmpegURL, "ffmpeg")
-		sm.uiHandler.SetNotice("", altTextNotice, "")
+		sm.uiHandler.SetNotice("", modelNotice, "")
 	}
 	if sm.ffmpeg.err != nil {
 		sm.logWarn("Videos are described by their preview only: %v", sm.ffmpeg.err)

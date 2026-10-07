@@ -11,12 +11,14 @@ import (
 )
 
 // recordingUi keeps what the session manager shows: the last chat list and
-// how often it was shown, and the printed text and errors
+// how often it was shown, the printed text and errors, and the notices by
+// chat and key
 type recordingUi struct {
 	chatLists int
 	chats     []Chat
 	printed   []string
 	errors    []error
+	notices   map[string]string
 }
 
 func (u *recordingUi) NewMessage(Message)               {}
@@ -26,8 +28,13 @@ func (u *recordingUi) PrintText(text string)            { u.printed = append(u.p
 func (u *recordingUi) SetStatus(SessionStatus)          {}
 func (u *recordingUi) OpenFile(string)                  {}
 func (u *recordingUi) CloseChat(string)                 {}
-func (u *recordingUi) SetNotice(string, string, string) {}
 func (u *recordingUi) GetWriter() io.Writer             { return io.Discard }
+func (u *recordingUi) SetNotice(chatID, key, text string) {
+	if u.notices == nil {
+		u.notices = map[string]string{}
+	}
+	u.notices[chatID+"/"+key] = text
+}
 func (u *recordingUi) SetChats(chats []Chat) {
 	u.chatLists++
 	u.chats = chats

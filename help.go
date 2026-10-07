@@ -72,6 +72,8 @@ func PrintCommands() {
 	fmt.Fprintln(textView, "[-::-]Chat[-::-]")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"backlog [::-]or[::b]", config.Config.Keymap.CommandBacklog, "[::-] = load next", config.Config.General.BacklogMsgQuantity, "previous messages")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"read [::-]or[::b]", config.Config.Keymap.CommandRead, "[::-] = mark new messages in chat as read")
+	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"recap[::-] time  = Sum up the messages of a time, like 10m, 2h or 3 days, with the AI model, without a time the unread ones")
+	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"ask[::-] time question  = Answer a question about the messages of a time with the AI model, like "+cmdPrefix+"ask 5d what did we plan for sunday?")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"react[::-] emoji  = React to the selected message, without an emoji the reaction is removed")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"search[::-] text  = Search the loaded messages of the chat, or chats and groups when Chats is selected")
 	fmt.Fprintln(textView, "[::b] "+cmdPrefix+"search[::-]  = Show everything again")

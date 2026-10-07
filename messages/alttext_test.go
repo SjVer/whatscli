@@ -34,8 +34,8 @@ func TestWithAltText(t *testing.T) {
 }
 
 func TestOnlyImagesWithoutAltTextAreDescribed(t *testing.T) {
-	defer func(model string) { config.Config.General.AltTextModel = model }(config.Config.General.AltTextModel)
-	config.Config.General.AltTextModel = "a/model"
+	defer func(model string) { config.Config.General.AiModel = model }(config.Config.General.AiModel)
+	config.Config.General.AiModel = "a/model"
 	sm := newTestSession(&recordingUi{})
 	// a queue without a worker, to see what is queued
 	sm.altTexts.queue = make(chan string, 10)
@@ -55,7 +55,7 @@ func TestOnlyImagesWithoutAltTextAreDescribed(t *testing.T) {
 		t.Error("expected the chat to wait for alt texts")
 	}
 
-	config.Config.General.AltTextModel = ""
+	config.Config.General.AiModel = ""
 	sm.altTexts.pending = map[string]bool{}
 	sm.describeChat(chat)
 	if len(sm.altTexts.pending) != 0 {

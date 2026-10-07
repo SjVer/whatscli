@@ -82,15 +82,17 @@ When pressing `Ctrl-w` (default mapping) you enter "message selection mode" whic
 
 Some commands such as the `/add` and `/remove` require a "user id" as their input. You can copy the user ID of a selected chat or a selected message to the clipboard with `Ctrl-c` (default mapping) and easily append them to the current input using `Ctrl-v`.
 
-### Alt texts for images
+### Alt texts and recaps by a local AI model
 
 whatscli can describe the images, stickers, videos and GIFs of the chat you open in a few words, like `[IMAGE: a dog running on a beach]`, with a vision model that runs on your own computer. Add one line to the `[general]` section of `whatscli.config`:
 
 ```
-alt_text_model = ggml-org/gemma-3-4b-it-GGUF
+ai_model = ggml-org/gemma-3-4b-it-GGUF
 ```
 
 whatscli downloads [llama.cpp](https://github.com/ggml-org/llama.cpp) and the model the first time (about 3 GB for this one) next to the config, and runs it while whatscli runs. On a computer without a good graphics card, `ggml-org/SmolVLM-500M-Instruct-GGUF` is much smaller. Videos and GIFs are described by 2 to 8 of their frames, more for longer ones, which are taken with [ffmpeg](https://ffmpeg.org): the one you installed, or on Windows one that whatscli downloads (about 80 MB). The media of older messages expire on the WhatsApp server, so mostly recent ones get an alt text.
+
+The same model sums up chats: `/recap 10m` recaps the messages of the open chat of the last 10 minutes, below them, and takes times like `2h`, `1h30m`, `1d` or `3 days`. Without a time it recaps the unread messages, or the last 50. `/ask 5d what did we plan for sunday?` answers a question from the messages of the last 5 days, or from all loaded ones without a time. (`alt_text_model`, the earlier name of the setting, still works.)
 
 ### Notifications
 

@@ -3,26 +3,19 @@ package messages
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"image/png"
-	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/normen/whatscli/config"
 	"golang.org/x/image/webp"
 )
 
-// Alt texts: when a model is configured, see AltTextModel, the images, stickers
+// Alt texts: when a model is configured, see AiModel, the images, stickers
 // and videos of the open chat are described in a few words by it, one at a
 // time, see describeChat. The description is saved with the message.
-
-// altTextNotice is the key of the notices about the model, on the main screen
-const altTextNotice = "alttext"
 
 // altTextPrompt asks the model for the alt text
 const altTextPrompt = "Describe this image for someone who can't see it, in at most 10 words, without a preamble."
@@ -40,7 +33,7 @@ type altTexts struct {
 // described, if a model is configured. It is cheap to call again, as the ones
 // that are described or wait for it are skipped.
 func (sm *SessionManager) describeChat(chatID string) {
-	if config.Config.General.AltTextModel == "" || chatID == "" {
+	if config.Config.General.AiModel == "" || chatID == "" {
 		return
 	}
 	sm.altTexts.lock.Lock()
@@ -100,7 +93,7 @@ func (sm *SessionManager) describeMessage(id string) (string, error) {
 	if !ok {
 		return "", errors.New("the message isn't loaded")
 	}
-	url, err := sm.ensureServer()
+	url, err := sm.ensureModel()
 	if err != nil {
 		return "", err
 	}
@@ -207,41 +200,12 @@ func stickerAsPNG(data []byte) ([]byte, error) {
 }
 
 // askAltText asks the model at url for the alt text of images, like the
-// frames of a video, the way the OpenAI chat API is asked, which llama-server
-// answers like
+// frames of a video, which it gives without quotes and a period
 func askAltText(url, prompt, mimeType string, images ...[]byte) (string, error) {
-	content := []map[string]any{{"type": "text", "text": prompt}}
-	for _, data := range images {
-		content = append(content, map[string]any{"type": "image_url",
-			"image_url": map[string]string{"url": "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)}})
-	}
-	request, _ := json.Marshal(map[string]any{
-		"max_tokens": 40,
-		"messages":   []map[string]any{{"role": "user", "content": content}},
-	})
-	client := http.Client{Timeout: 2 * time.Minute}
-	resp, err := client.Post(url+"/v1/chat/completions", "application/json", bytes.NewReader(request))
+	text, err := askModel(url, prompt, 40, mimeType, images...)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("the model answered %s", resp.Status)
-	}
-	var answer struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err = json.NewDecoder(resp.Body).Decode(&answer); err != nil {
-		return "", err
-	}
-	if len(answer.Choices) == 0 {
-		return "", errors.New("the model gave no answer")
-	}
-	text := strings.TrimSpace(answer.Choices[0].Message.Content)
 	text = strings.TrimSuffix(strings.Trim(text, `"'`), ".")
 	if text == "" {
 		return "", errors.New("the model gave an empty answer")

@@ -65,10 +65,11 @@ type SessionManager struct {
 	offlineMessages atomic.Int64
 	// pictures of chats shown on notifications
 	pictures chatPictures
-	// the model that describes images, and the messages waiting for it, see describeChat
-	altServer altServer
-	altTexts  altTexts
-	ffmpeg    ffmpegTool
+	// the AI model, see ensureModel, the messages waiting for alt texts by it,
+	// see describeChat, and ffmpeg, which takes the frames of videos for it
+	model    modelServer
+	altTexts altTexts
+	ffmpeg   ffmpegTool
 	// members of groups who can be mentioned
 	members groupMembers
 	// whether the QR code is shown, and whatscli can be linked, see LinkWithCode
@@ -100,7 +101,7 @@ func (sm *SessionManager) Close() {
 	if client != nil {
 		client.Disconnect()
 	}
-	sm.stopServer()
+	sm.stopModel()
 	sm.db.saveChats()
 }
 

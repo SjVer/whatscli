@@ -30,7 +30,7 @@ func startServerProcess(cmd *exec.Cmd) error {
 	if serverJob == 0 {
 		job, err := windows.CreateJobObject(nil, nil)
 		if err != nil {
-			return nil // it is still stopped when whatscli closes, see stopServer
+			return nil // it is still stopped when whatscli closes, see stopModel
 		}
 		info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 			BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE},

@@ -112,6 +112,11 @@ func (sm *SessionManager) execCommand(command Command) {
 		sm.uiHandler.PrintText(out)
 	case "relink":
 		sm.relink()
+	case "recap":
+		// the model takes a while, the other commands don't wait for it
+		go sm.recap(command.Params)
+	case "ask":
+		go sm.ask(command.Params)
 	}
 }
 

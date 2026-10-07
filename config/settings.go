@@ -24,8 +24,10 @@ type General struct {
 	PreviewPath         string
 	CmdPrefix           string
 	EnableNotifications bool
-	// a Hugging Face repo of a vision model that describes images and stickers,
-	// like ggml-org/gemma-3-4b-it-GGUF, which whatscli runs itself; off if empty
+	// a Hugging Face repo of a vision model, like ggml-org/gemma-3-4b-it-GGUF,
+	// which whatscli runs itself for alt texts, /recap and /ask; off if empty
+	AiModel string
+	// the earlier name of AiModel, which still works
 	AltTextModel       string
 	UseTerminalBell    bool
 	BacklogMsgQuantity int
@@ -161,6 +163,9 @@ func InitConfig() {
 			cfg.ValueMapper = os.ExpandEnv
 			if section, err := cfg.GetSection("general"); err == nil {
 				section.MapTo(&Config.General)
+				if Config.General.AiModel == "" {
+					Config.General.AiModel = Config.General.AltTextModel
+				}
 			}
 			if section, err := cfg.GetSection("keymap"); err == nil {
 				section.MapTo(&Config.Keymap)
