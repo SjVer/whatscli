@@ -6,6 +6,49 @@ A command line interface for WhatsApp, based on [go-whatsmeow](https://github.co
 
 ![whatscli-screenshot](/doc/screenshot.png?raw=true "WhatsCLI 0.6.5")
 
+## What this fork adds
+
+Compared to [normen/whatscli](https://github.com/normen/whatscli):
+
+**Chat list**
+- Matches the phone: pinned chats first, archived chats in a collapsible "Archived" folder, chats stored under a LID merged with the phone number chat, and a pin icon for pinned chats
+- Archive or unarchive the selected chat with `a`, also on the phone
+- `/relink` links whatscli again to get the full chat history from the phone
+- Chats with a draft are marked with ✎, and each chat keeps its own draft of the typed message
+- Unread counts follow the phone: chats read on the phone or another device are read in whatscli too
+
+**Messages**
+- WhatsApp formatting: `*bold*`, `_italic_`, `~strikethrough~` and `` `code` ``
+- Emoji reactions, shown below each message and as a dim "... reacted ..." line; react to the selected message with `e`
+- Replies, shown above the message they reply to; reply to the selected message with `a`
+- ✓ sent, ✓✓ delivered and coloured ✓✓ read ticks, also per member in groups (see the message info)
+- Short timestamps, and messages of one sender grouped below one header
+- Mentions: type `@` in a group to mention a member, and mentions are shown by name and highlighted
+- People who aren't in your contacts are shown by their profile name, in italics, or their phone number
+- Stickers are shown and can be opened
+- Older messages are loaded from the phone the first time a chat is opened, and with `Ctrl+b`
+- Status notices, like loading errors, are dim lines below the chat they are about
+
+**Input**
+- A text area that grows with the message, up to 8 lines: `Enter` sends, `Shift+Enter` or `Alt+Enter` starts a new line
+- `Ctrl+Backspace`, `Ctrl+Delete` and `Ctrl+Left/Right` work by words, and pasted text with line breaks is sent as one message
+- Emoji with `:shortcodes:` and suggestions, recently used ones first
+- Paste an image from the clipboard with `Alt+v`, sent with the typed message as its caption
+- Commands are colored, and `/search` searches the chat list or the loaded messages of a chat
+
+**AI model, optional and running on your own computer**
+- Alt texts for images, stickers, videos, GIFs and animated stickers, like `[IMAGE: a dog on a beach]`
+- `/recap 10m` sums up a chat, `/ask 5d what did we plan for sunday?` answers a question about it
+- See [Alt texts and recaps by a local AI model](#alt-texts-and-recaps-by-a-local-ai-model)
+
+**Other**
+- Notifications on Windows come from whatscli with its own icon, show the picture of the chat, and also tell when the connection is lost or back
+- Link with a code instead of the QR code with `/code` and your phone number
+- Attachments open in the background with the default app or a command per type (`image_command`, `video_command`, ...)
+- The status bar shows how long ago data was last received, and the terminal title the number of new messages
+- `-dump`, `-dump-chat` and `-log` print what whatscli knows, for debugging
+- Many fixes for freezes, crashes and sync problems, and the code is split into files by concern
+
 ## Features
 
 Things that work.
@@ -98,7 +141,7 @@ The same model sums up chats: `/recap 10m` recaps the messages of the open chat 
 
 ### Notifications
 
-The app supports basic desktop notifications through the `gen2brain/beeep` library, to enable it set `enable_notifications = true` in `whatscli.config`. Set `use_terminal_bell = true` to ring your terminal's bell instead of sending a desktop notification.
+The app supports desktop notifications, to enable it set `enable_notifications = true` in `whatscli.config`. They show the picture of the chat, and also tell when the connection is lost or back. On Windows they are sent as whatscli with its icon, elsewhere through the `gen2brain/beeep` library. Set `use_terminal_bell = true` to ring your terminal's bell instead of sending a desktop notification.
 
 ### Configuration
 
@@ -114,9 +157,9 @@ Using a recent version of go, building should be straightforward. Either use `go
 
 ### Structure Overview
 
-The `main.go` contains most UI elements which are based around a tview app running on the main routine. It uses a keymap configuration based on the tslocum/cbind library. Apart from that it mostly manages the selection of messages in the current chat as well as displaying the messages and chat list that the session manager sends.
+The UI is in the files of the main package, around a tview app running on the main routine that `main.go` sets up: `chatlist.go`, `render.go`, `input.go`, `keys.go` (the keymap, based on the tslocum/cbind library) and so on. It manages the selection of messages in the current chat as well as displaying the messages and chat list that the session manager sends.
 
-The `messages/session_manager.go` runs a separate go routine to receive messages from the `go-whatsmeow` library which in turn runs the websocket connection to the WhatsApp server. The session manager receives the messages from `go-whatsmeow` and the commands from the UI via channels that it drains on its main routine. It then updates the UI accordingly using the `UiMessageHandler` interface. This ensures "thread safe" management of the connection and data while both UI and network connection run separately.
+The `messages/session_manager.go` (with the other files in `messages`, split by concern) runs a separate go routine to receive messages from the `go-whatsmeow` library which in turn runs the websocket connection to the WhatsApp server. The session manager receives the messages from `go-whatsmeow` and the commands from the UI via channels that it drains on its main routine. It then updates the UI accordingly using the `UiMessageHandler` interface. This ensures "thread safe" management of the connection and data while both UI and network connection run separately.
 
 Session manager is designed "object like", the MessageDatabase in `messages/storage.go` is similar and somewhat linked to the session manager. In theory the session manager could be run multiple times (multiple accounts) or a different implementation of a session manager could connect to a different service like e.g. Telegram.
 
